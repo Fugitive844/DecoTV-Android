@@ -1,0 +1,17 @@
+<resources>
+    <color name="deco_bg">#0A0C10</color>
+    <color name="deco_surface">#14171E</color>
+    <color name="deco_surface2">#1C2029</color>
+    <color name="deco_line">#262B36</color>
+    <color name="deco_text">#F3F5F8</color>
+    <color name="deco_text2">#9BA3B4</color>
+    <color name="deco_text3">#7D8597</color>
+    <color name="deco_text4">#4A5263</color>
+    <color name="deco_accent">#3DDB9A</color>
+    <color name="deco_on_accent">#06140E</color>
+    <color name="deco_accent_soft">#293DDB9A</color>
+    <color name="deco_star">#FFB020</color>
+    <color name="deco_danger">#FF6B6B</color>
+    <color name="deco_nav">#F50E1016</color>
+    <bool name="deco_light_bars">false</bool>
+</resources>

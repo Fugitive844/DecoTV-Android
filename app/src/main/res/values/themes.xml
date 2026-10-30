@@ -1,0 +1,37 @@
+<resources>
+    <!-- 颜色随深浅模式切换（values / values-night 的 colors.xml）；标题栏由页面自己画 -->
+    <style name="Base.Theme.DecoTV" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/deco_accent</item>
+        <item name="colorOnPrimary">@color/deco_on_accent</item>
+        <item name="colorPrimaryContainer">@color/deco_accent_soft</item>
+        <item name="colorOnPrimaryContainer">@color/deco_accent</item>
+        <item name="colorSecondary">@color/deco_accent</item>
+        <item name="colorOnSecondary">@color/deco_on_accent</item>
+        <item name="colorSecondaryContainer">@color/deco_accent_soft</item>
+        <item name="colorOnSecondaryContainer">@color/deco_accent</item>
+        <item name="android:colorBackground">@color/deco_bg</item>
+        <item name="android:windowBackground">@color/deco_bg</item>
+        <item name="colorSurface">@color/deco_bg</item>
+        <item name="colorOnSurface">@color/deco_text</item>
+        <item name="colorOnBackground">@color/deco_text</item>
+        <item name="colorSurfaceVariant">@color/deco_surface2</item>
+        <item name="colorOnSurfaceVariant">@color/deco_text2</item>
+        <item name="colorOutline">@color/deco_text4</item>
+        <item name="colorOutlineVariant">@color/deco_line</item>
+        <item name="colorSurfaceContainerLowest">@color/deco_surface</item>
+        <item name="colorSurfaceContainerLow">@color/deco_surface</item>
+        <item name="colorSurfaceContainer">@color/deco_surface</item>
+        <item name="colorSurfaceContainerHigh">@color/deco_surface</item>
+        <item name="colorSurfaceContainerHighest">@color/deco_surface2</item>
+        <item name="colorError">@color/deco_danger</item>
+        <item name="android:statusBarColor">@color/deco_bg</item>
+        <item name="android:windowLightStatusBar">@bool/deco_light_bars</item>
+    </style>
+    <style name="Theme.DecoTV" parent="Base.Theme.DecoTV" />
+    <!-- 播放页：画面区始终黑底，下方简介随深浅模式 -->
+    <style name="Theme.DecoTV.Player">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

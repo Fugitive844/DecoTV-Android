@@ -1,0 +1,20 @@
+.gradle/
+.idea/
+.vscode/
+*.iml
+captures/
+out/
+**/build/
+build/
+local.properties
+*.jks
+*.keystore
+*.idsig
+*.log
+.env
+.env.*
+
+# 签名、发布配置、交付产物与回执，只留本机
+deploy/
+# 本地测试服务端导入用的视频源与直播源
+测试导入视频源/

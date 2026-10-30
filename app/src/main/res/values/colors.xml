@@ -1,0 +1,19 @@
+<resources>
+    <!-- 浅色「晨光」；深色「夜幕」在 values-night，名字一一对应 -->
+    <color name="deco_bg">#F6F7F9</color>
+    <color name="deco_surface">#FFFFFF</color>
+    <color name="deco_surface2">#ECEEF2</color>
+    <color name="deco_line">#E2E5EA</color>
+    <color name="deco_text">#12151B</color>
+    <color name="deco_text2">#545C6E</color>
+    <color name="deco_text3">#646C7E</color>
+    <color name="deco_text4">#C3C8D1</color>
+    <color name="deco_accent">#0A8052</color>
+    <color name="deco_on_accent">#FFFFFF</color>
+    <color name="deco_accent_soft">#1F0A8052</color>
+    <color name="deco_star">#A86400</color>
+    <color name="deco_danger">#D93838</color>
+    <color name="deco_nav">#F5FFFFFF</color>
+    <color name="deco_primary">@color/deco_accent</color>
+    <bool name="deco_light_bars">true</bool>
+</resources>

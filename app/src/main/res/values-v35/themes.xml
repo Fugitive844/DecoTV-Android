@@ -1,0 +1,6 @@
+<resources>
+    <!-- Android 15 起 targetSdk 35 默认强制边到边，内容会被标题栏和状态栏遮住；这里沿用系统栏避让 -->
+    <style name="Theme.DecoTV" parent="Base.Theme.DecoTV">
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+</resources>
