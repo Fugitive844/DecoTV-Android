@@ -24,6 +24,12 @@ public final class SearchGroups {
             return "";
         }
 
+        public List<String> posters() {
+            List<String> out = new ArrayList<>();
+            for (Video v : items) if (!v.poster.isEmpty()) out.add(v.poster);
+            return out;
+        }
+
         public int maxEpisodes() {
             int max = 0;
             for (Video v : items) max = Math.max(max, v.episodes.size());

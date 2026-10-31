@@ -132,7 +132,7 @@ public class PlayerActivity extends AppCompatActivity {
         Tasks.run(() -> {
             Video v = null;
             try {
-                for (Video x : DecoApp.get().api.search(query)) {
+                for (Video x : DecoApp.get().api.searchSource(query, source)) {
                     if (x.key().equals(key) && !x.episodes.isEmpty()) {
                         v = x;
                         break;

@@ -239,7 +239,7 @@ final class SettingsPage implements MainActivity.Page {
         RelayPage(MainActivity activity) {
             Prefs prefs = DecoApp.get().prefs;
             LinearLayout body = Ui.column(activity, 16);
-            TextView intro = Ui.text(activity, "默认全部直连，不占用服务器带宽。全中转：始终经服务端获取。智能：直连失败时自动改走服务端中转。搜索始终经服务端。", 13, false);
+            TextView intro = Ui.text(activity, "默认全部直连，不占用服务器带宽（搜索默认智能）。全中转：始终经服务端获取。智能：直连失败时自动改走服务端中转。", 13, false);
             intro.setAlpha(0.7f);
             body.addView(intro);
             for (Relay.Item item : Relay.Item.values()) {

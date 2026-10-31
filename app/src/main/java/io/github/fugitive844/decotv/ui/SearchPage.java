@@ -36,7 +36,10 @@ final class SearchPage implements MainActivity.Page {
     private final List<Video> results = new ArrayList<>();
     private boolean aggregate;
     private int generation;
-    private volatile okhttp3.Call running;
+    private volatile Runnable running;
+    private static final long RENDER_INTERVAL_MS = 300;
+    private boolean renderPending;
+    private int progressDone, progressTotal, finishedGeneration;
     private String lastQuery = "";
 
     SearchPage(MainActivity activity) {
@@ -120,8 +123,8 @@ final class SearchPage implements MainActivity.Page {
             @Override public void afterTextChanged(android.text.Editable s) {
                 if (s.toString().trim().isEmpty() && !results.isEmpty()) {
                     generation++;
-                    okhttp3.Call call = running;
-                    if (call != null) call.cancel();
+                    Runnable cancel = running;
+                    if (cancel != null) cancel.run();
                     results.clear();
                     render();
                     progress.setVisibility(View.GONE);
@@ -143,7 +146,7 @@ final class SearchPage implements MainActivity.Page {
             String meta = (g.year.isEmpty() ? "" : g.year + " · ") + (g.movie ? "电影" : g.maxEpisodes() + " 集") + " · "
                     + g.items.size() + " 个源\n" + g.sourceNames(3);
             h.subtitle.setText(meta);
-            DecoApp.get().images.cover(h.image, g.poster());
+            DecoApp.get().images.covers(h.image, g.posters());
         }).cards().onClick((g, i) -> PlayerActivity.open(activity, g.items.get(0), lastQuery));
         list = new RecyclerView(activity);
         list.setPadding(0, Ui.dp(activity, 4), 0, Ui.dp(activity, 16));
@@ -208,6 +211,18 @@ final class SearchPage implements MainActivity.Page {
         return done ? "共 " + count : String.format(Locale.ROOT, "已返回 %d / %d 个源 · %s", finished, total, count);
     }
 
+    /** 本机搜索一次可能有上千条结果、几十个源接连返回：合并刷新，避免每个源都在主线程重新分组。 */
+    private void scheduleRender(int token) {
+        if (renderPending) return;
+        renderPending = true;
+        root.postDelayed(() -> {
+            renderPending = false;
+            if (token != generation || token == finishedGeneration) return;
+            render();
+            status.setText(summary(false, progressDone, progressTotal));
+        }, RENDER_INTERVAL_MS);
+    }
+
     void search(String raw) {
         String query = raw == null ? "" : raw.trim();
         if (query.isEmpty()) return;
@@ -216,8 +231,8 @@ final class SearchPage implements MainActivity.Page {
         if (imm != null) imm.hideSoftInputFromWindow(input.getWindowToken(), 0);
         int token = ++generation;
         lastQuery = query;
-        okhttp3.Call previous = running;
-        if (previous != null) previous.cancel();
+        Runnable previous = running;
+        if (previous != null) previous.run();
         progress.setVisibility(View.VISIBLE);
         empty.setVisibility(View.GONE);
         status.setText("正在搜索「" + query + "」…");
@@ -228,21 +243,23 @@ final class SearchPage implements MainActivity.Page {
         // 搜索记录与审计由服务端记录，失败不影响搜索本身
         Tasks.run(() -> { DecoApp.get().api.addSearchHistory(query); return true; }, ok -> loadHistory(), error -> { });
         Tasks.run(() -> {
-            okhttp3.Call call = DecoApp.get().api.searchStream(query, (batch, done, total) -> {
+            boolean finished = DecoApp.get().api.searchStream(query, (batch, done, total) -> {
                 sources[0] = done;
                 sources[1] = total;
                 Tasks.post(() -> {
                     if (token != generation) return;
                     results.addAll(batch);
-                    if (!batch.isEmpty()) render();
-                    status.setText(summary(false, done, total));
+                    progressDone = done;
+                    progressTotal = total;
+                    scheduleRender(token);
                 });
             }, c -> running = c);
             // 服务端在结果命中缓存时可能提前结束流，丢掉部分源；此时改用一次性搜索补全
-            if (call != null && sources[1] > 0 && sources[0] < sources[1]) return DecoApp.get().api.search(query);
+            if (finished && sources[1] > 0 && sources[0] < sources[1]) return DecoApp.get().api.search(query);
             return null;
         }, complete -> {
             if (token != generation) return;
+            finishedGeneration = token;
             if (complete != null) {
                 results.clear();
                 results.addAll(complete);
@@ -258,6 +275,7 @@ final class SearchPage implements MainActivity.Page {
             loadHistory();
         }, error -> {
             if (token != generation) return;
+            finishedGeneration = token;
             progress.setVisibility(View.GONE);
             status.setText("");
             updateHistory();

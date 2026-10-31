@@ -55,6 +55,7 @@ public class MainActivity extends AppCompatActivity {
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         Style.systemBars(this);
+        if (state == null) CrashReport.showIfAny(this);
         updater = new AppUpdater(this);
         LinearLayout root = Ui.column(this, 0);
         root.setBackgroundColor(Style.bg(this));

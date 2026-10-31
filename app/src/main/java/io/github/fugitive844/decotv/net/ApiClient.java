@@ -49,6 +49,7 @@ public final class ApiClient {
 
     private final Prefs prefs;
     private final OkHttpClient http;
+    private final LocalSearch localSearch;
 
     public ApiClient(Prefs prefs) {
         this.prefs = prefs;
@@ -72,6 +73,7 @@ public final class ApiClient {
                     return chain.proceed(builder.build());
                 })
                 .build();
+        localSearch = new LocalSearch(this);
     }
 
     public OkHttpClient http() { return http; }
@@ -331,7 +333,43 @@ public final class ApiClient {
 
     // ---------- 搜索与详情 ----------
 
+    /** 本机搜索的归属：换账号、服务器或访问秘钥后，源列表要重新获取。 */
+    private String searchOwner() { return prefs.server() + "|" + prefs.cookie() + "|" + prefs.accessKey(); }
+
+    /** 这次搜索是否由手机直接请求视频源；全中转或服务端不支持时走服务端搜索。 */
+    private boolean searchLocally() throws IOException {
+        return prefs.mode(Relay.Item.SEARCH) != Relay.Mode.RELAY && localSearch.available(searchOwner());
+    }
+
+    /** 与服务端相同：关键词转成简体，转换后不同就连原词一起搜。系统低于 Android 10 没有转换接口，只搜原词。 */
+    private static List<String> searchQueries(String query) {
+        List<String> queries = new ArrayList<>();
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            try {
+                String simplified = android.icu.text.Transliterator.getInstance("Traditional-Simplified").transliterate(query);
+                if (!simplified.isEmpty()) queries.add(simplified);
+            } catch (RuntimeException ignored) {
+                // 转换失败时只搜原词
+            }
+        }
+        if (!queries.contains(query)) queries.add(query);
+        return queries;
+    }
+
+    private List<Video> searchAllLocally(String query, String onlySource) throws IOException {
+        List<Video> found = new ArrayList<>();
+        List<String> queries = searchQueries(query);
+        localSearch.run(searchOwner(), queries, onlySource, prefs.mode(Relay.Item.SEARCH), (batch, done, total) -> found.addAll(batch), cancel -> { });
+        return io.github.fugitive844.decotv.model.SearchRanking.rank(found, queries.get(0));
+    }
+
+    /** 已知源时只需查这一个源，不必请求全部视频源。 */
+    public List<Video> searchSource(String query, String source) throws IOException {
+        return searchLocally() ? searchAllLocally(query, source) : search(query);
+    }
+
     public List<Video> search(String query) throws IOException {
+        if (searchLocally()) return searchAllLocally(query, null);
         JSONArray results = obj(get("/api/search?q=" + Relay.enc(query))).optJSONArray("results");
         List<Video> list = new ArrayList<>();
         for (int i = 0; results != null && i < results.length(); i++) {
@@ -347,15 +385,18 @@ public final class ApiClient {
     }
 
     /**
-     * 流式搜索（SSE /api/search/ws）：每个视频源返回就回调一批，不必等全部源完成。
-     * 调用方可通过 {@link okhttp3.Call#cancel()} 中止；返回 null 表示被中止。
+     * 流式搜索：每个视频源返回就回调一批，不必等全部源完成。本机搜索时手机直接请求各源，否则走 SSE /api/search/ws。
+     * 调用方可通过 started 收到的 Runnable 中止；返回 false 表示被中止。
      */
-    public okhttp3.Call searchStream(String query, SearchListener listener, java.util.function.Consumer<okhttp3.Call> started) throws IOException {
+    public boolean searchStream(String query, SearchListener listener, java.util.function.Consumer<Runnable> started) throws IOException {
+        if (searchLocally()) {
+            return localSearch.run(searchOwner(), searchQueries(query), null, prefs.mode(Relay.Item.SEARCH), listener, started);
+        }
         Request request = new Request.Builder().url(prefs.server() + "/api/search/ws?q=" + Relay.enc(query))
                 .header("Accept", "text/event-stream").get().build();
         OkHttpClient streaming = http.newBuilder().readTimeout(90, TimeUnit.SECONDS).build();
         okhttp3.Call call = streaming.newCall(request);
-        started.accept(call);
+        started.accept(call::cancel);
         try (Response response = call.execute()) {
             if (response.code() == 401) throw new AuthException();
             if (!response.isSuccessful() || response.body() == null) throw new IOException("HTTP " + response.code());
@@ -387,10 +428,10 @@ public final class ApiClient {
                 }
             }
         } catch (IOException e) {
-            if (call.isCanceled()) return null;
+            if (call.isCanceled()) return false;
             throw e;
         }
-        return call;
+        return true;
     }
 
     public Video detail(String source, String id) throws IOException {

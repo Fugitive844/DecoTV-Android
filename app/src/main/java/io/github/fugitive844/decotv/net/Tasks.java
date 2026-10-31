@@ -23,6 +23,9 @@ public final class Tasks {
                 MAIN.post(() -> done.ok(value));
             } catch (Exception e) {
                 MAIN.post(() -> fail.fail(e));
+            } catch (OutOfMemoryError | StackOverflowError e) {
+                // 超大图片或响应不能让整个 App 退出，按这一次任务失败处理
+                MAIN.post(() -> fail.fail(new java.io.IOException("内容过大，无法处理", e)));
             }
         });
     }

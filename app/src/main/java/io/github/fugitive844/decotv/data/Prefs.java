@@ -64,6 +64,11 @@ public final class Prefs {
                 : "dark".equals(m) ? androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_YES : androidx.appcompat.app.AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM);
     }
 
+    /** 已提示过的系统退出记录时间，避免同一次异常退出重复弹窗。 */
+    public long lastExitSeen() { return sp.getLong("last_exit_seen", 0); }
+
+    public void setLastExitSeen(long time) { sp.edit().putLong("last_exit_seen", time).apply(); }
+
     /** 上次选择的缓存格式，下次弹窗默认选中。 */
     public String downloadFormat() { return sp.getString("download_format", "encrypted"); }
 
@@ -110,7 +115,7 @@ public final class Prefs {
     }
 
     public Relay.Mode mode(Relay.Item item) {
-        return Relay.Mode.of(sp.getString("relay_" + item.key, Relay.Mode.DIRECT.key));
+        return Relay.Mode.of(sp.getString("relay_" + item.key, item.defaultMode.key));
     }
 
     public void setMode(Relay.Item item, Relay.Mode mode) {

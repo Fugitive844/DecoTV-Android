@@ -17,6 +17,7 @@ public class DecoApp extends Application {
     @Override public void onCreate() {
         super.onCreate();
         instance = this;
+        io.github.fugitive844.decotv.ui.CrashReport.install(this);
         prefs = new Prefs(this);
         prefs.applyOneTimeMigrations();
         prefs.applyThemeMode();

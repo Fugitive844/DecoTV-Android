@@ -12,9 +12,30 @@ public final class Video {
     public String id = "", title = "", poster = "", source = "", sourceName = "", year = "", desc = "", typeName = "", remarks = "";
     public final List<String> episodes = new ArrayList<>();
     public final List<String> episodeTitles = new ArrayList<>();
+    /** 只用于搜索排序：有豆瓣信息的作品加分。 */
+    public long doubanId;
+
+    /** 苹果 CMS 的一条 vod，字段处理与服务端 toSearchResultFromApiItem 相同。 */
+    public static Video fromCms(JSONObject x, String source, String sourceName) {
+        Video v = new Video();
+        v.id = x.optString("vod_id", "");
+        v.title = x.optString("vod_name", "").trim().replaceAll("\\s+", " ");
+        v.poster = x.optString("vod_pic", "");
+        v.source = source;
+        v.sourceName = sourceName;
+        String year = x.optString("vod_year", "");
+        v.year = year.matches("(?s).*\\d{4}.*") ? year.replaceAll("(?s).*?(\\d{4}).*", "$1") : "";
+        v.desc = x.optString("vod_content", "").replaceAll("<[^>]+>", "\n").replaceAll("\\n+", "\n").trim();
+        v.typeName = x.optString("type_name", "");
+        v.remarks = x.optString("vod_remarks", "");
+        v.doubanId = x.optLong("vod_douban_id", 0);
+        v.parsePlayUrl(x.optString("vod_play_url", ""));
+        return v;
+    }
 
     public static Video fromJson(JSONObject o) {
         Video v = new Video();
+        v.doubanId = o.optLong("douban_id", 0);
         v.id = o.optString("id");
         v.title = o.optString("title");
         v.poster = o.optString("poster");

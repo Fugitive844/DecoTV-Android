@@ -101,18 +101,7 @@ public final class Poster {
             p.source = source;
             p.sourceName = sourceName;
             // 片单里通常已带分集地址，点开时直接播放，不用再搜索或取详情
-            Video v = new Video();
-            v.id = p.id;
-            v.title = p.title;
-            v.poster = p.poster;
-            v.source = source;
-            v.sourceName = sourceName;
-            String year = x.optString("vod_year", "");
-            v.year = year.matches(".*\\d{4}.*") ? year.replaceAll(".*?(\\d{4}).*", "$1") : "";
-            v.desc = x.optString("vod_content", "");
-            v.typeName = x.optString("type_name", "");
-            v.remarks = p.remarks;
-            v.parsePlayUrl(x.optString("vod_play_url", ""));
+            Video v = Video.fromCms(x, source, sourceName);
             if (!v.episodes.isEmpty()) p.tag = v;
             out.add(p);
         }

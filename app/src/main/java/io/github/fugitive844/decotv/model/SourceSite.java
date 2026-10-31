@@ -42,6 +42,17 @@ public final class SourceSite {
         return (api.endsWith("/") ? api : api + "/") + "?" + query;
     }
 
+    /** 搜索地址：与服务端 searchFromApi 的拼法相同，不补 /。 */
+    public String searchUrl(String query, int page) {
+        String wd;
+        try {
+            wd = java.net.URLEncoder.encode(query, "UTF-8");
+        } catch (java.io.UnsupportedEncodingException e) {
+            throw new IllegalStateException(e);
+        }
+        return api + (api.contains("?") ? "&" : "?") + "ac=videolist&wd=" + wd + (page > 1 ? "&pg=" + page : "");
+    }
+
     private static final String[] CLASS_KEYS = {"class", "classes", "class_list", "classlist", "list", "typelist"};
 
     /** 分类：兼容各家 CMS 的不同字段名（class / classes / typelist…，也可能套在 data 里）。 */
