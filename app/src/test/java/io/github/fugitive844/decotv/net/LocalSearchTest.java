@@ -98,8 +98,4 @@ public class LocalSearchTest {
         }
     }
 
-    @Test public void searchIsSmartByDefault() {
-        assertEquals(Relay.Mode.SMART, Relay.Item.SEARCH.defaultMode);
-        assertEquals(Relay.Mode.DIRECT, Relay.Item.VOD.defaultMode);
-    }
 }

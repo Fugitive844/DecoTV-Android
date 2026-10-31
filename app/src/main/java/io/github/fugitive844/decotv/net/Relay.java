@@ -4,7 +4,7 @@ import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.List;
 
-/** 中转策略：第三方资源默认直连，只有用户在设置中打开时才经服务端中转；搜索默认智能，直连失败的源改走中转。 */
+/** 中转策略：第三方资源默认直连，只有用户在设置中打开时才经服务端中转。 */
 public final class Relay {
     private Relay() {}
 
@@ -20,21 +20,14 @@ public final class Relay {
     }
 
     public enum Item {
-        SEARCH("search", "视频搜索", "手机直接请求各视频源；全中转由服务端搜索；智能时直连失败的源经服务端获取", Mode.SMART),
+        SEARCH("search", "视频搜索", "手机直接请求各视频源；全中转由服务端搜索；智能时直连失败的源经服务端获取"),
         IMAGE("image", "封面图片", "直连图片站；中转走 /api/image-proxy"),
         VOD("vod", "点播视频", "直连视频源；中转走服务端 m3u8 代理（含去广告）"),
         LIVE_LIST("live_list", "直播频道列表", "直接下载 m3u；中转由服务端解析"),
         LIVE_STREAM("live_stream", "直播流", "直连直播流；中转走 /api/proxy/m3u8"),
         LOGO("logo", "台标", "直连台标；中转走 /api/proxy/logo");
         public final String key, label, hint;
-        public final Mode defaultMode;
-        Item(String key, String label, String hint) { this(key, label, hint, Mode.DIRECT); }
-        Item(String key, String label, String hint, Mode defaultMode) {
-            this.key = key;
-            this.label = label;
-            this.hint = hint;
-            this.defaultMode = defaultMode;
-        }
+        Item(String key, String label, String hint) { this.key = key; this.label = label; this.hint = hint; }
     }
 
     /** 按策略给出依次尝试的地址：不中转只有直连，全中转只有中转，智能先直连后中转。 */

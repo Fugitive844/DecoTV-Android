@@ -115,7 +115,7 @@ public final class Prefs {
     }
 
     public Relay.Mode mode(Relay.Item item) {
-        return Relay.Mode.of(sp.getString("relay_" + item.key, item.defaultMode.key));
+        return Relay.Mode.of(sp.getString("relay_" + item.key, Relay.Mode.DIRECT.key));
     }
 
     public void setMode(Relay.Item item, Relay.Mode mode) {

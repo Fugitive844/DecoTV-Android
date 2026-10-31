@@ -33,7 +33,7 @@ DecoTV 的原生安卓客户端，功能包括登录、注册、首页推荐、�
 | 直播流 | 用直播源 UA 直连 | `/api/proxy/m3u8`、`/api/proxy/stream` |
 | 台标 | 直连 | `/api/proxy/logo` |
 
-每一项都可以在「设置」里单独切换：不中转（默认）、全中转、智能（直连失败自动改走中转）。搜索默认智能；服务端的 `/api/server-config` 没有 `AdultTypeWords` 字段时（旧版服务端），搜索自动走服务端。logcat 的 `DecoNet` 标签会记录每个请求实际走的路径和主机。
+每一项都可以在「设置」里单独切换：不中转（默认）、全中转、智能（直连失败自动改走中转）。服务端的 `/api/server-config` 没有 `AdultTypeWords` 字段时（旧版服务端），搜索自动走服务端。logcat 的 `DecoNet` 标签会记录每个请求实际走的路径和主机。
 
 ## 首页与片库
 
