@@ -13,7 +13,7 @@ import androidx.appcompat.app.AppCompatActivity;
 
 /**
  * 播放页的布局与全屏：
- * 手机竖屏为上下布局（播放区至少半屏）；转到横屏或点全屏按钮进入沉浸式全屏，竖版视频全屏时保持竖屏，
+ * 手机竖屏为上下布局（播放区占可用高度的一半）；转到横屏或点全屏按钮进入沉浸式全屏，竖版视频全屏时保持竖屏，
  * 全屏中右侧有旋转按钮可在横竖屏之间切换。平板（最短边 ≥ 600dp）不强制方向，横屏时左右布局，全屏只铺满画面。
  */
 final class PlayerLayout {
@@ -145,7 +145,8 @@ final class PlayerLayout {
             boxLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 62);
             detailLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 38);
         } else {
-            boxLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, Ui.inlinePlayerHeight(activity));
+            // 按实际可用高度平分，随系统栏和窗口尺寸变化重新测量。
+            boxLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1);
             detailLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1);
         }
         box.setLayoutParams(boxLp);

@@ -174,12 +174,6 @@ final class Ui {
         }
     }
 
-    /** 竖屏小窗播放器高度：16:9，下方留给简介、选集和换源。 */
-    static int inlinePlayerHeight(Context c) {
-        android.util.DisplayMetrics m = c.getResources().getDisplayMetrics();
-        return Math.min(m.widthPixels, m.heightPixels) * 9 / 16;
-    }
-
     static String clock(long seconds) {
         long s = Math.max(0, seconds);
         long h = s / 3600, m = (s % 3600) / 60, sec = s % 60;

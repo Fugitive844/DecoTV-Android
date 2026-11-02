@@ -36,6 +36,7 @@ import com.google.android.material.button.MaterialButton;
 import io.github.fugitive844.decotv.DecoApp;
 import io.github.fugitive844.decotv.download.DownloadStore;
 import io.github.fugitive844.decotv.download.DownloadTask;
+import io.github.fugitive844.decotv.download.OfflinePlaylist;
 import io.github.fugitive844.decotv.download.PlaylistDataSource;
 import io.github.fugitive844.decotv.download.SegmentDataSource;
 import io.github.fugitive844.decotv.download.Stream;
@@ -51,7 +52,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 播放离线缓存：与在线点播相同的小窗 / 全屏、手势、倍速，上一集 / 下一集在已缓存的剧集之间切换。
+ * 播放离线缓存：与在线点播相同的小窗 / 全屏、手势、倍速，所有可播放缓存按影片分组、首尾循环切换。
  * 加密缓存边读边解密；没缓存完的 m3u8 边存边播，缓存完成后在当前进度无缝切到最终文件。
  * 进度在有网络时照常同步到播放记录。
  */
@@ -68,6 +69,9 @@ public class OfflinePlayerActivity extends AppCompatActivity {
     private PlayerLayout layout;
     private PlayerGestures gestures;
     private TextView title, status, badge;
+    private TextView listTitle;
+    private LinearLayoutManager listLayout;
+    private DownloadTask currentTask;
     /** 正在边存边播的任务 id，没有为 null。 */
     private String streaming;
     private final DownloadStore.Listener storeListener = this::onStoreChanged;
@@ -91,6 +95,10 @@ public class OfflinePlayerActivity extends AppCompatActivity {
     public long positionMs() { return player == null ? -1 : player.getCurrentPosition(); }
 
     public long durationMs() { return player == null ? -1 : player.getDuration(); }
+
+    /** 当前缓存和列表大小，供联调测试读取。 */
+    public String currentCacheId() { return currentTask == null ? "" : currentTask.id; }
+    public int cacheCount() { return episodes.size(); }
 
     /** 测试用：跳到指定位置、暂停。 */
     public void seekForTest(long ms) { player.seekTo(ms); }
@@ -118,17 +126,12 @@ public class OfflinePlayerActivity extends AppCompatActivity {
             finish();
             return;
         }
-        for (DownloadTask t : DecoApp.get().downloads.all()) {
-            if (t.videoKey.equals(start.videoKey) && (t.state == DownloadTask.State.DONE || t.id.equals(start.id) || Stream.available(this, t))) {
-                episodes.add(t);
-            }
-        }
-        episodes.sort((a, b) -> Integer.compare(a.episode, b.episode));
-        for (int i = 0; i < episodes.size(); i++) if (episodes.get(i).id.equals(start.id)) position = i;
-        try {
-            video = Video.fromJson(new JSONObject(start.videoJson));
-        } catch (Exception e) {
-            video = null;
+        episodes.addAll(playableTasks());
+        position = OfflinePlaylist.indexOf(episodes, start.id);
+        if (position < 0) {
+            Ui.toast(this, "该缓存暂时无法播放");
+            finish();
+            return;
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         box = new PlayerGestures.Frame(this);
@@ -137,6 +140,10 @@ public class OfflinePlayerActivity extends AppCompatActivity {
         player = new ExoPlayer.Builder(this).setSeekBackIncrementMs(10000).setSeekForwardIncrementMs(10000).build();
         view.setPlayer(controls(player));
         view.setFullscreenButtonClickListener(ignored -> layout.toggle());
+        // 全屏时也可以手动选择缓存，倍速仍可从菜单进入。
+        view.findViewById(androidx.media3.ui.R.id.exo_settings).setOnClickListener(v -> playerMenu());
+        view.findViewById(androidx.media3.ui.R.id.exo_prev).setContentDescription("上一个缓存");
+        view.findViewById(androidx.media3.ui.R.id.exo_next).setContentDescription("下一个缓存");
         view.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener) v -> {
             if (layout != null) layout.setControlsVisible(v == View.VISIBLE);
         });
@@ -156,24 +163,30 @@ public class OfflinePlayerActivity extends AppCompatActivity {
         status.setAlpha(0.6f);
         details.addView(status);
         LinearLayout actions = Ui.row(this);
-        actions.addView(button("上一集", v -> step(-1)));
-        actions.addView(button("下一集", v -> step(1)));
+        actions.addView(button("上一个缓存", v -> step(-1)));
+        actions.addView(button("下一个缓存", v -> step(1)));
+        actions.addView(button("缓存列表", v -> chooseCache()));
         speedButton = button(PlayerActivity.speedLabel(DecoApp.get().prefs.playbackSpeed()), v -> chooseSpeed());
         actions.addView(speedButton);
         actions.addView(button("弹幕", v -> danmaku.showPanel()));
         HorizontalScrollView scroll = new HorizontalScrollView(this);
         scroll.addView(actions);
         details.addView(scroll);
-        details.addView(Ui.text(this, "已缓存的剧集", 15, true));
-        list = new RowAdapter<DownloadTask>(0, 0, (h, t) -> {
-            boolean playing = episodes.indexOf(t) == position;
-            h.title.setText((playing ? "▶ " : "") + t.episodeTitle);
-            h.subtitle.setText(t.state == DownloadTask.State.DONE ? t.format.label + " · " + t.container
-                    : "缓存中 " + Math.round(t.progress() * 100) + "% · 可边存边播");
-        }).onClick((t, i) -> play(i, 0));
+        listTitle = Ui.text(this, "", 15, true);
+        details.addView(listTitle);
+        list = new RowAdapter<DownloadTask>(42, 58, (h, t) -> {
+            DecoApp.get().images.offlineCover(h.image, t);
+            boolean playing = currentTask != null && t.id.equals(currentTask.id);
+            h.title.setText((playing ? "▶ " : "") + cacheLabel(t));
+            h.title.setTextColor(playing ? com.google.android.material.color.MaterialColors.getColor(h.title,
+                    androidx.appcompat.R.attr.colorPrimary) : Style.text(this));
+            h.subtitle.setText(t.sourceName + " · " + (t.state == DownloadTask.State.DONE ? t.format.label + " · " + t.container
+                    : "缓存中 " + Math.round(t.progress() * 100) + "% · 可边存边播"));
+        }).onClick((t, i) -> selectCache(t.id));
         list.set(episodes);
         RecyclerView rv = new RecyclerView(this);
-        rv.setLayoutManager(new LinearLayoutManager(this));
+        listLayout = new LinearLayoutManager(this);
+        rv.setLayoutManager(listLayout);
         rv.setAdapter(list);
         details.addView(rv, Ui.fill(1));
 
@@ -216,8 +229,7 @@ public class OfflinePlayerActivity extends AppCompatActivity {
                             + " dur=" + player.getDuration() + " seekable=" + player.isCurrentMediaItemSeekable());
                 }
                 if (s == Player.STATE_ENDED) {
-                    save();
-                    if (position + 1 < episodes.size()) play(position + 1, 0);
+                    step(1);
                 }
             }
 
@@ -239,14 +251,32 @@ public class OfflinePlayerActivity extends AppCompatActivity {
         play(position, 0);
     }
 
-    /** 边存边播的这一集缓存完成后，在当前进度切到最终文件；进度刷新列表。 */
+    private List<DownloadTask> playableTasks() {
+        return OfflinePlaylist.build(DecoApp.get().downloads.all(),
+                t -> t.state == DownloadTask.State.DONE || Stream.available(this, t));
+    }
+
+    /** 同步新增、删除和缓存进度，按任务 id 保持当前播放项。 */
     private void onStoreChanged() {
-        if (episodes.isEmpty()) return;
-        for (int i = 0; i < episodes.size(); i++) {
-            DownloadTask fresh = DecoApp.get().downloads.get(episodes.get(i).id);
-            if (fresh != null) episodes.set(i, fresh);
+        if (currentTask == null || isFinishing()) return;
+        int oldPosition = position;
+        episodes.clear();
+        episodes.addAll(playableTasks());
+        list.set(episodes);
+        if (episodes.isEmpty()) {
+            save();
+            player.stop();
+            Ui.toast(this, "没有可播放的缓存");
+            finish();
+            return;
         }
-        list.notifyDataSetChanged();
+        position = OfflinePlaylist.indexOf(episodes, currentTask.id);
+        if (position < 0) {
+            save();
+            play(Math.min(oldPosition, episodes.size() - 1), 0);
+            return;
+        }
+        updateListTitle();
         DownloadTask t = episodes.get(position);
         if (streaming != null && streaming.equals(t.id)) {
             if (t.state == DownloadTask.State.DONE) {
@@ -279,15 +309,15 @@ public class OfflinePlayerActivity extends AppCompatActivity {
     private Player controls(ExoPlayer exo) {
         return new ForwardingPlayer(exo) {
             @Override public boolean isCommandAvailable(int c) {
-                if (c == COMMAND_SEEK_TO_NEXT || c == COMMAND_SEEK_TO_NEXT_MEDIA_ITEM) return position + 1 < episodes.size();
-                if (c == COMMAND_SEEK_TO_PREVIOUS || c == COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) return position > 0;
+                if (c == COMMAND_SEEK_TO_NEXT || c == COMMAND_SEEK_TO_NEXT_MEDIA_ITEM
+                        || c == COMMAND_SEEK_TO_PREVIOUS || c == COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) return !episodes.isEmpty();
                 return super.isCommandAvailable(c);
             }
 
             @NonNull @Override public Commands getAvailableCommands() {
                 return super.getAvailableCommands().buildUpon()
-                        .addIf(COMMAND_SEEK_TO_NEXT, position + 1 < episodes.size()).addIf(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM, position + 1 < episodes.size())
-                        .addIf(COMMAND_SEEK_TO_PREVIOUS, position > 0).addIf(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM, position > 0).build();
+                        .addIf(COMMAND_SEEK_TO_NEXT, !episodes.isEmpty()).addIf(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM, !episodes.isEmpty())
+                        .addIf(COMMAND_SEEK_TO_PREVIOUS, !episodes.isEmpty()).addIf(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM, !episodes.isEmpty()).build();
             }
 
             @Override public void seekToNext() { step(1); }
@@ -312,12 +342,46 @@ public class OfflinePlayerActivity extends AppCompatActivity {
                 }).show();
     }
 
-    private void step(int delta) {
-        int next = position + delta;
-        if (next < 0 || next >= episodes.size()) {
-            Ui.toast(this, delta > 0 ? "已经是最后一集缓存" : "已经是第一集缓存");
-            return;
+    private static String cacheLabel(DownloadTask t) { return t.title + " · " + t.episodeTitle; }
+
+    private void updateListTitle() {
+        listTitle.setText("缓存列表 · " + (position + 1) + "/" + episodes.size() + " · 循环播放");
+    }
+
+    private void playerMenu() {
+        new com.google.android.material.dialog.MaterialAlertDialogBuilder(this).setTitle("播放设置")
+                .setItems(new String[]{"缓存列表", "播放倍速", "弹幕设置"}, (d, which) -> {
+                    if (which == 0) chooseCache();
+                    else if (which == 1) chooseSpeed();
+                    else danmaku.showPanel();
+                }).show();
+    }
+
+    private void chooseCache() {
+        // 对话框使用快照，下载期间列表变化也不会选错任务。
+        List<DownloadTask> choices = new ArrayList<>(episodes);
+        String[] labels = new String[choices.size()];
+        for (int i = 0; i < labels.length; i++) {
+            DownloadTask t = choices.get(i);
+            labels[i] = cacheLabel(t) + " · " + t.format.label;
         }
+        new com.google.android.material.dialog.MaterialAlertDialogBuilder(this).setTitle("缓存列表")
+                .setSingleChoiceItems(labels, OfflinePlaylist.indexOf(choices, currentTask.id), (d, which) -> {
+                    selectCache(choices.get(which).id);
+                    d.dismiss();
+                }).show();
+    }
+
+    private void selectCache(String id) {
+        int next = OfflinePlaylist.indexOf(episodes, id);
+        if (next < 0 || (currentTask != null && currentTask.id.equals(id))) return;
+        save();
+        play(next, 0);
+    }
+
+    private void step(int delta) {
+        int next = OfflinePlaylist.step(position, delta, episodes.size());
+        if (next < 0) return;
         save();
         play(next, 0);
     }
@@ -340,22 +404,32 @@ public class OfflinePlayerActivity extends AppCompatActivity {
     }
 
     private void play(int i, long startMs) {
-        position = i;
         DownloadTask t = episodes.get(i);
-        setTitle(t.title);
-        title.setText(t.title + " · " + t.episodeTitle);
         String previous = streaming;
-        streaming = t.state == DownloadTask.State.DONE ? null : t.id;
-        if (streaming != null && !Stream.available(this, t)) {
-            streaming = previous;
-            playState = "failed:not-streamable";
-            status.setText("这一集还不能边存边播");
+        if (t.state != DownloadTask.State.DONE && !Stream.available(this, t)) {
+            Ui.toast(this, "该缓存暂时无法播放");
+            onStoreChanged();
             return;
         }
+        position = i;
+        currentTask = t;
+        // 跨影片切换时，播放记录与弹幕必须跟随新的影片元数据。
+        try {
+            video = Video.fromJson(new JSONObject(t.videoJson));
+        } catch (Exception e) {
+            video = null;
+        }
+        setTitle(t.title);
+        title.setText(cacheLabel(t));
+        streaming = t.state == DownloadTask.State.DONE ? null : t.id;
         if (streaming != null && !streaming.equals(previous)) Stream.acquire(streaming);
         status.setText(streaming != null ? streamStatus(t) : "离线播放 · " + t.format.label + " · " + t.container);
         badge.setText(streaming != null ? "边存边播" : "离线");
         list.notifyDataSetChanged();
+        updateListTitle();
+        int first = listLayout.findFirstCompletelyVisibleItemPosition();
+        int last = listLayout.findLastCompletelyVisibleItemPosition();
+        if (first == RecyclerView.NO_POSITION || position < first || position > last) listLayout.scrollToPositionWithOffset(position, 0);
         playState = "loading";
         danmaku.load(t.title, video == null ? "" : video.year, t.episode, DownloadTask.danmakuFile(this, t.id));
         player.setMediaSource(source(t));
@@ -370,11 +444,11 @@ public class OfflinePlayerActivity extends AppCompatActivity {
 
     /** 有网络时同步播放进度；离线时静默失败。 */
     private void save() {
-        if (player == null || video == null || episodes.isEmpty()) return;
+        if (player == null || video == null || currentTask == null) return;
         long pos = player.getCurrentPosition() / 1000, dur = Math.max(0, player.getDuration()) / 1000;
         if (pos < 1) return;
         Record r = Record.of(video);
-        r.index = episodes.get(position).episode + 1;
+        r.index = currentTask.episode + 1;
         r.playTime = pos;
         r.totalTime = dur;
         r.searchTitle = video.title;

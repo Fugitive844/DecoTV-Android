@@ -53,6 +53,13 @@ public final class Vault {
 
     /** 加密 plain 到 out，返回写出的字节数。 */
     public static long encrypt(File plain, File out) throws IOException {
+        try (InputStream in = new FileInputStream(plain)) {
+            return encrypt(in, out);
+        }
+    }
+
+    /** 直接从内存或输入流加密，封面无需先写入明文临时文件。调用者负责关闭输入流。 */
+    public static long encrypt(InputStream in, File out) throws IOException {
         try {
             byte[] key = new byte[32], ctrIv = new byte[16];
             SecureRandom random = new SecureRandom();
@@ -66,7 +73,7 @@ public final class Vault {
             ctr.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(ctrIv));
             Arrays.fill(key, (byte) 0);
             long written = 0;
-            try (InputStream in = new FileInputStream(plain); OutputStream o = new FileOutputStream(out)) {
+            try (OutputStream o = new FileOutputStream(out)) {
                 o.write(MAGIC);
                 o.write(gcmIv);
                 o.write(ByteBuffer.allocate(2).putShort((short) wrapped.length).array());

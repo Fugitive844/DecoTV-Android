@@ -84,7 +84,7 @@ final class DownloadsPage implements MainActivity.Page {
                     bytes += t.bytes;
                 }
                 h.subtitle.setText(first.sourceName + " · 已完成 " + done + " / " + row.group.size() + " 集" + size(bytes));
-                DecoApp.get().images.cover(h.image, first.cover);
+                DecoApp.get().images.offlineCover(h.image, first);
             } else {
                 DownloadTask t = row.task;
                 h.image.setVisibility(View.GONE);

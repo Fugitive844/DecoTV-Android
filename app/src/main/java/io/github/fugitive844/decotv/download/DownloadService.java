@@ -202,6 +202,11 @@ public class DownloadService extends Service {
         store.update(task);
         String label = task.title + " " + task.episodeTitle;
         progressNote("正在缓存 " + label, 0, true);
+        try {
+            CoverCache.load(this, task, DecoApp.get().images);
+        } catch (IOException e) {
+            android.util.Log.w("DecoTV-cover", "封面缓存失败，打开缓存列表时可重试");
+        }
         Relay.Mode mode = DecoApp.get().prefs.mode(Relay.Item.VOD);
         File work = workDir(task);
         Fetcher.Result result;
@@ -337,6 +342,9 @@ public class DownloadService extends Service {
     /** 删除任务及其文件（加密文件、相册里的文件、未完成的临时文件）。 */
     public static void delete(Context c, DownloadTask t) {
         if (running(t.id)) pause(c, t.id);
+        DecoApp.get().downloads.remove(t.id);
+        CoverCache.delete(c, t);
+        DecoApp.get().images.forgetOfflineCover(t);
         if (t.format == DownloadTask.Format.ENCRYPTED) {
             //noinspection ResultOfMethodCallIgnored
             vaultFile(c, t).delete();
@@ -350,7 +358,6 @@ public class DownloadService extends Service {
         File base = c.getExternalFilesDir("downloads");
         if (base != null) deleteTree(new File(base, t.id));
         deleteTree(new File(new File(c.getFilesDir(), "work"), t.id));
-        DecoApp.get().downloads.remove(t.id);
     }
 
     @Nullable @Override public IBinder onBind(Intent intent) { return null; }

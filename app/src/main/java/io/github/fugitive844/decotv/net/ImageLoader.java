@@ -6,6 +6,8 @@ import android.util.LruCache;
 import android.widget.ImageView;
 
 import io.github.fugitive844.decotv.data.Prefs;
+import io.github.fugitive844.decotv.download.CoverCache;
+import io.github.fugitive844.decotv.download.DownloadTask;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -29,6 +31,40 @@ public final class ImageLoader {
     }
 
     public void cover(ImageView view, String url) { load(view, url, Relay.Item.IMAGE, null); }
+
+    /** 缓存页专用：优先本地文件，旧任务缺失时在线补齐并按任务格式保存。 */
+    public void offlineCover(ImageView view, DownloadTask task) {
+        String key = "offline:" + task.id + ":" + task.format.key;
+        view.setTag(key);
+        view.setImageDrawable(null);
+        Bitmap hit = cache.get(key);
+        if (hit != null) {
+            view.setImageBitmap(hit);
+            return;
+        }
+        android.content.Context context = view.getContext().getApplicationContext();
+        Tasks.run(() -> CoverCache.load(context, task, this), bitmap -> {
+            if (bitmap != null) cache.put(key, bitmap);
+            if (key.equals(view.getTag()) && bitmap != null) view.setImageBitmap(bitmap);
+        }, error -> { /* 无网且尚未补齐封面时保留占位图 */ });
+    }
+
+    public void forgetOfflineCover(DownloadTask task) {
+        cache.remove("offline:" + task.id + ":" + task.format.key);
+    }
+
+    /** 供后台下载任务保存封面，沿用图片中转策略与内存缓存。 */
+    public Bitmap fetchCover(String rawUrl) throws IOException {
+        String url = Relay.absolute(api.server(), rawUrl == null ? "" : rawUrl.trim());
+        if (url.isEmpty()) throw new IOException("没有封面地址");
+        Bitmap hit = cache.get(url);
+        if (hit != null) return hit;
+        String server = api.server();
+        Bitmap bitmap = fetch(Relay.Item.IMAGE, url.startsWith(server + "/") ? List.of(url)
+                : Relay.candidates(prefs.mode(Relay.Item.IMAGE), url, Relay.imageProxy(server, url)), url);
+        cache.put(url, bitmap);
+        return bitmap;
+    }
 
     /** 同一部片有多个封面地址时依次尝试，避开连不上的图片站。 */
     public void covers(ImageView view, List<String> rawUrls) {
