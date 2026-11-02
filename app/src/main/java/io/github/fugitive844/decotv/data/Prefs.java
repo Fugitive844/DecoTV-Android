@@ -103,6 +103,11 @@ public final class Prefs {
 
     public void setPlaybackSpeed(float speed) { sp.edit().putFloat("playback_speed", speed).apply(); }
 
+    /** 离线连播范围：true 只在当前影片内循环，false 在全部缓存里循环。 */
+    public boolean offlineTitleOnly() { return sp.getBoolean("offline_title_only", false); }
+
+    public void setOfflineTitleOnly(boolean on) { sp.edit().putBoolean("offline_title_only", on).apply(); }
+
     /**
      * 只执行一次的设置迁移，App 启动时调用。
      * 1.4.2：安装后首次启动把「直播列表」改为全中转一次（直连 GitHub 等列表地址经常很慢），之后完全按用户的设置。

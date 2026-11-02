@@ -74,6 +74,8 @@ public class OfflinePlaylistFlowTest {
         String base = args.getString("liveBase");
         app.prefs.saveLogin(base, args.getString("liveUser"), app.api.login(base, args.getString("liveUser"), args.getString("livePassword")));
         for (Relay.Item item : Relay.Item.values()) app.prefs.setMode(item, Relay.Mode.DIRECT);
+        // 队列和计数断言不能混入其他测试留下的缓存。
+        for (DownloadTask t : app.downloads.all()) DownloadService.delete(app, t);
         prefix = "playlist-test-" + UUID.randomUUID();
         media = new File(app.getCacheDir(), prefix + ".mp4");
         try (InputStream in = InstrumentationRegistry.getInstrumentation().getContext().getAssets().open("offline-playlist.mp4")) {
@@ -174,8 +176,139 @@ public class OfflinePlaylistFlowTest {
         return (androidx.recyclerview.widget.RecyclerView) description(activity.getWindow().getDecorView(), "全屏缓存列表");
     }
 
+    private static androidx.recyclerview.widget.RecyclerView list(Activity activity, String name) {
+        return (androidx.recyclerview.widget.RecyclerView) description(activity.getWindow().getDecorView(), name);
+    }
+
+    private static void tapItem(ActivityScenario<OfflinePlayerActivity> scene, String name, int position) throws Exception {
+        scene.onActivity(x -> list(x, name).scrollToPosition(position));
+        await(scene, x -> list(x, name).findViewHolderForAdapterPosition(position) != null);
+        scene.onActivity(x -> list(x, name).findViewHolderForAdapterPosition(position).itemView.performClick());
+    }
+
+    private static String label(androidx.recyclerview.widget.RecyclerView rv, int position) {
+        return ((TextView) rv.findViewHolderForAdapterPosition(position).itemView).getText().toString();
+    }
+
+    /** 30 集乱序缓存（缺第 2 集）+ 其他电影：选集、连播范围、上一部 / 下一部、全屏浮层。 */
+    @Test public void thirtyEpisodesOutOfOrderHaveTheirOwnPickerAndScope() throws Exception {
+        long now = System.currentTimeMillis();
+        app.prefs.setOfflineTitleOnly(false);
+        DownloadTask movieOld = add("长片名电影：这是一个用来检查列表省略效果的很长很长的标题", 0, 1, now, DownloadTask.Format.ORIGINAL);
+        DownloadTask[] eps = new DownloadTask[30];
+        List<Integer> order = new ArrayList<>();
+        for (int i = 0; i < 30; i++) if (i != 1) order.add(i);
+        java.util.Collections.shuffle(order, new java.util.Random(11));
+        long created = now + 10;
+        for (int i : order) eps[i] = add("三十集电视剧", i, 30, created++, DownloadTask.Format.ORIGINAL);
+        DownloadTask movieNew = add("最近缓存的电影", 0, 1, created + 10, DownloadTask.Format.ENCRYPTED);
+        try (ActivityScenario<OfflinePlayerActivity> scene = ActivityScenario.launch(OfflinePlayerActivity.intent(app, eps[0].id))) {
+            ready(scene, eps[0]);
+            scene.onActivity(x -> {
+                half(x);
+                assertEquals(3, x.titleCount());
+                assertEquals(31, x.cacheCount());
+                assertEquals(29, list(x, "本片选集").getAdapter().getItemCount());
+                assertTrue(list(x, "本片选集").isShown());
+                assertEquals("1", label(list(x, "本片选集"), 0));
+                assertEquals("缺第 2 集不重新编号", "3", label(list(x, "本片选集"), 1));
+            });
+            shot("cache-portrait-episodes");
+            // 点选集，当前项跟随
+            tapItem(scene, "本片选集", 19);
+            ready(scene, eps[20]);
+            // 全部缓存：到本剧末尾接到下一部电影，再循环回最前
+            tapItem(scene, "本片选集", 28);
+            ready(scene, eps[29]);
+            next(scene, true); ready(scene, movieOld);
+            next(scene, true); ready(scene, movieNew);
+            next(scene, true); ready(scene, eps[0]);
+            // 仅本片：只在本剧内首尾循环，不串片
+            scene.onActivity(x -> description(x.getWindow().getDecorView(), "连播：全部缓存").performClick());
+            await(scene, OfflinePlayerActivity::titleOnlyForTest);
+            next(scene, false); ready(scene, eps[29]);
+            next(scene, true); ready(scene, eps[0]);
+            next(scene, true); ready(scene, eps[2]);
+            // 上一部 / 下一部跨影片，首尾循环，不受连播范围影响
+            scene.onActivity(x -> description(x.getWindow().getDecorView(), "下一部缓存").performClick());
+            ready(scene, movieOld);
+            await(scene, x -> list(x, "全部缓存列表").isShown());
+            shot("cache-portrait-titles");
+            scene.onActivity(x -> description(x.getWindow().getDecorView(), "下一部缓存").performClick());
+            ready(scene, movieNew);
+            scene.onActivity(x -> description(x.getWindow().getDecorView(), "上一部缓存").performClick());
+            ready(scene, movieOld);
+            // 点全部缓存的电视剧行回到本剧
+            tapItem(scene, "全部缓存列表", 1);
+            ready(scene, eps[0]);
+            scene.onActivity(x -> description(x.getWindow().getDecorView(), "连播：仅本片").performClick());
+            await(scene, x -> !x.titleOnlyForTest());
+
+            // 全屏：左边全部缓存、右边选集，横竖屏都不用进齿轮
+            scene.onActivity(x -> {
+                player(x.getWindow().getDecorView()).showController();
+                x.findViewById(androidx.media3.ui.R.id.exo_fullscreen).performClick();
+            });
+            await(scene, x -> x.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+                    && overlay(x).isShown() && list(x, "全屏选集").isShown() && list(x, "全屏选集").getHeight() > 0);
+            scene.onActivity(x -> {
+                assertEquals(3, overlay(x).getAdapter().getItemCount());
+                assertEquals(29, list(x, "全屏选集").getAdapter().getItemCount());
+                int[] prev = new int[2], next = new int[2], left = new int[2], right = new int[2];
+                x.findViewById(androidx.media3.ui.R.id.exo_prev).getLocationOnScreen(prev);
+                x.findViewById(androidx.media3.ui.R.id.exo_next).getLocationOnScreen(next);
+                View leftPanel = (View) overlay(x).getParent(), rightPanel = (View) list(x, "全屏选集").getParent();
+                leftPanel.getLocationOnScreen(left);
+                rightPanel.getLocationOnScreen(right);
+                assertTrue("浮层不能盖住上一个按钮", left[0] + leftPanel.getWidth() <= prev[0]);
+                assertTrue("浮层不能盖住下一个按钮", right[0] >= next[0] + x.findViewById(androidx.media3.ui.R.id.exo_next).getWidth());
+            });
+            shot("cache-landscape-overlay");
+            tapItem(scene, "全屏选集", 9);
+            ready(scene, eps[10]);
+            scene.onActivity(x -> {
+                assertTrue(player(x.getWindow().getDecorView()).isControllerFullyVisible());
+                assertTrue(list(x, "全屏选集").isShown());
+            });
+            // 切到电影时没有选集面板，切回来又出现
+            tapItem(scene, "全屏缓存列表", 0);
+            ready(scene, movieNew);
+            await(scene, x -> overlay(x).isShown() && !list(x, "全屏选集").isShown());
+            shot("cache-landscape-movie");
+            tapItem(scene, "全屏缓存列表", 1);
+            ready(scene, eps[0]);
+            await(scene, x -> list(x, "全屏选集").isShown());
+            // 控制栏隐藏时浮层隐藏
+            scene.onActivity(x -> player(x.getWindow().getDecorView()).hideController());
+            await(scene, x -> !overlay(x).isShown() && !list(x, "全屏选集").isShown());
+            scene.onActivity(x -> player(x.getWindow().getDecorView()).showController());
+            await(scene, x -> overlay(x).isShown());
+            // 竖屏全屏
+            scene.onActivity(x -> description(x.getWindow().getDecorView(), "旋转屏幕").performClick());
+            await(scene, x -> x.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT
+                    && overlay(x).isShown() && ((View) player(x.getWindow().getDecorView()).getParent()).getHeight()
+                    > ((View) player(x.getWindow().getDecorView()).getParent()).getWidth());
+            shot("cache-portrait-fullscreen");
+            scene.onActivity(x -> {
+                player(x.getWindow().getDecorView()).showController();
+                int[] c = new int[2], l = new int[2], p = new int[2];
+                View center = x.findViewById(androidx.media3.ui.R.id.exo_play_pause);
+                View left = (View) overlay(x).getParent();
+                center.getLocationOnScreen(c);
+                left.getLocationOnScreen(l);
+                x.findViewById(androidx.media3.ui.R.id.exo_progress).getLocationOnScreen(p);
+                assertTrue("竖屏浮层须在播放键和进度条之间 center=" + c[1] + "+" + center.getHeight() + " panel=" + l[1] + "+" + left.getHeight() + " progress=" + p[1],
+                        l[1] >= c[1] + center.getHeight() && l[1] + left.getHeight() <= p[1]);
+            });
+            scene.onActivity(x -> x.getOnBackPressedDispatcher().onBackPressed());
+            await(scene, x -> !overlay(x).isShown());
+            scene.onActivity(OfflinePlaylistFlowTest::half);
+        }
+    }
+
     @Test public void fullscreenCacheOverlaySupportsQuickSelectionAndWraparound() throws Exception {
         long now = System.currentTimeMillis();
+        app.prefs.setOfflineTitleOnly(false);
         DownloadTask a = add("电影甲", 0, 1, now, DownloadTask.Format.ORIGINAL);
         DownloadTask b = add("电影乙", 0, 1, now + 1, DownloadTask.Format.ENCRYPTED);
         add("电影丙", 0, 1, now + 2, DownloadTask.Format.ORIGINAL);
@@ -190,61 +323,29 @@ public class OfflinePlaylistFlowTest {
             });
             await(scene, x -> x.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
                     && overlay(x).isShown() && overlay(x).getHeight() > 0);
-            scene.onActivity(x -> assertEquals(5, overlay(x).getAdapter().getItemCount()));
+            scene.onActivity(x -> assertEquals(4, overlay(x).getAdapter().getItemCount()));
             java.util.concurrent.atomic.AtomicLong before = new java.util.concurrent.atomic.AtomicLong();
             scene.onActivity(x -> before.set(x.positionMs()));
             onView(withContentDescription("全屏缓存列表")).perform(swipeUp());
             scene.onActivity(x -> {
                 assertEquals(first.id, x.currentCacheId());
                 assertTrue("滚动列表不能快进快退", Math.abs(before.get() - x.positionMs()) < 100);
-                overlay(x).scrollToPosition(3);
             });
-            await(scene, x -> overlay(x).findViewHolderForAdapterPosition(3) != null);
-            scene.onActivity(x -> overlay(x).findViewHolderForAdapterPosition(3).itemView.performClick());
+            tapItem(scene, "全屏缓存列表", 2);
             ready(scene, b);
-            await(scene, x -> overlay(x).findViewHolderForAdapterPosition(3) != null
-                    && overlay(x).findViewHolderForAdapterPosition(3).itemView.isSelected());
-            shot("offline-fullscreen-overlay");
+            await(scene, x -> overlay(x).findViewHolderForAdapterPosition(2) != null
+                    && overlay(x).findViewHolderForAdapterPosition(2).itemView.isSelected());
             next(scene, true); ready(scene, a);
             next(scene, true); ready(scene, first);
             next(scene, false); ready(scene, a);
-            scene.onActivity(x -> player(x.getWindow().getDecorView()).hideController());
-            await(scene, x -> !overlay(x).isShown());
-            scene.onActivity(x -> player(x.getWindow().getDecorView()).showController());
-            await(scene, x -> overlay(x).isShown());
             app.downloads.remove(b.id);
-            await(scene, x -> overlay(x).getAdapter().getItemCount() == 4 && x.currentCacheId().equals(a.id));
+            await(scene, x -> overlay(x).getAdapter().getItemCount() == 3 && x.currentCacheId().equals(a.id));
             add("新增电影", 0, 1, now + 5, DownloadTask.Format.ENCRYPTED);
-            await(scene, x -> overlay(x).getAdapter().getItemCount() == 5 && x.currentCacheId().equals(a.id));
-            // 旋转到竖屏全屏时列表仍可用，且不遮挡中部播放按钮。
-            scene.onActivity(x -> description(x.getWindow().getDecorView(), "旋转屏幕").performClick());
-            await(scene, x -> x.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT
-                    && overlay(x).isShown() && ((View) player(x.getWindow().getDecorView()).getParent()).getHeight()
-                    > ((View) player(x.getWindow().getDecorView()).getParent()).getWidth());
-            scene.onActivity(x -> {
-                View panel = (View) overlay(x).getParent();
-                View box = (View) panel.getParent();
-                assertTrue("竖屏列表须避开中间播放按钮", panel.getBottom() < box.getHeight() / 2);
-            });
-            await(scene, x -> ((androidx.recyclerview.widget.LinearLayoutManager) overlay(x).getLayoutManager())
-                    .findLastCompletelyVisibleItemPosition() == 4);
-            shot("offline-portrait-fullscreen-overlay");
+            await(scene, x -> overlay(x).getAdapter().getItemCount() == 4 && x.currentCacheId().equals(a.id));
             scene.onActivity(x -> x.getOnBackPressedDispatcher().onBackPressed());
             await(scene, x -> !overlay(x).isShown());
             scene.onActivity(OfflinePlaylistFlowTest::half);
         }
-    }
-
-    private static TextView text(View root, String match) {
-        if (root instanceof TextView && ((TextView) root).getText().toString().equals(match)) return (TextView) root;
-        if (root instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) root;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                TextView found = text(group.getChildAt(i), match);
-                if (found != null) return found;
-            }
-        }
-        return null;
     }
 
     private static void ready(ActivityScenario<OfflinePlayerActivity> scene, DownloadTask expected) throws Exception {
@@ -280,6 +381,7 @@ public class OfflinePlaylistFlowTest {
 
     @Test public void mixedQueueWrapsManualSelectionAndRecordsFollowMovie() throws Exception {
         long now = System.currentTimeMillis();
+        app.prefs.setOfflineTitleOnly(false);
         DownloadTask a = add("电影甲", 0, 1, now, DownloadTask.Format.ORIGINAL);
         DownloadTask b = add("电影乙", 0, 1, now + 1, DownloadTask.Format.ENCRYPTED);
         DownloadTask c = add("电影丙", 0, 1, now + 2, DownloadTask.Format.ORIGINAL);
@@ -307,8 +409,7 @@ public class OfflinePlaylistFlowTest {
             assertNotNull("跨影片切换应保存到正确影片", record);
             assertEquals("电影丙", record.title); assertEquals(1, record.index); assertEquals(1, record.totalEpisodes);
             assertTrue(record.playTime >= 3);
-            scene.onActivity(x -> text(x.getWindow().getDecorView(), "缓存列表").performClick());
-            onView(withText("测试剧 · 第1集 · 加密（仅本 App）")).inRoot(isDialog()).perform(click());
+            tapItem(scene, "全部缓存列表", 0);
             ready(scene, ep1);
             // 当前缓存删除后切到剩余缓存；删除其它项不改变当前播放。
             app.downloads.remove(a.id);
@@ -320,10 +421,7 @@ public class OfflinePlaylistFlowTest {
                 x.findViewById(androidx.media3.ui.R.id.exo_fullscreen).performClick();
             });
             await(scene, x -> x.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
-            scene.onActivity(x -> x.findViewById(androidx.media3.ui.R.id.exo_settings).performClick());
-            onView(withText("缓存列表")).inRoot(isDialog()).perform(click());
-            shot("offline-fullscreen-picker");
-            onView(withText("电影乙 · 正片 · 加密（仅本 App）")).inRoot(isDialog()).perform(click());
+            tapItem(scene, "全屏缓存列表", 2);
             ready(scene, b);
             scene.onActivity(x -> x.getOnBackPressedDispatcher().onBackPressed());
             await(scene, x -> x.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT);
@@ -333,6 +431,7 @@ public class OfflinePlaylistFlowTest {
 
     @Test public void endingLoopsAndNewCachesJoinWithoutChangingCurrent() throws Exception {
         long now = System.currentTimeMillis();
+        app.prefs.setOfflineTitleOnly(false);
         DownloadTask first = add("首部电影", 0, 1, now + 1, DownloadTask.Format.ORIGINAL);
         DownloadTask last = add("末部电影", 0, 1, now, DownloadTask.Format.ENCRYPTED);
         try (ActivityScenario<OfflinePlayerActivity> scene = ActivityScenario.launch(OfflinePlayerActivity.intent(app, last.id))) {

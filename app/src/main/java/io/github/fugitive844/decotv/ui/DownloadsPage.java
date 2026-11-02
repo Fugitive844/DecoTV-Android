@@ -236,7 +236,7 @@ final class DownloadsPage implements MainActivity.Page {
         int done = 0;
         boolean anyActive = false, anyPaused = false;
         for (List<DownloadTask> g : groups.values()) {
-            g.sort((a, b) -> Integer.compare(a.episode, b.episode));
+            io.github.fugitive844.decotv.download.OfflinePlaylist.sortEpisodes(g);
             rows.add(new Row(g, null));
             for (DownloadTask t : g) {
                 rows.add(new Row(g, t));

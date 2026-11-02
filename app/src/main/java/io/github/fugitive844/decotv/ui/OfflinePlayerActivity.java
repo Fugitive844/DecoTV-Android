@@ -29,10 +29,10 @@ import androidx.media3.exoplayer.hls.HlsMediaSource;
 import androidx.media3.exoplayer.source.MediaSource;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.ui.PlayerView;
+import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
-import com.google.android.material.button.MaterialButton;
 import io.github.fugitive844.decotv.DecoApp;
 import io.github.fugitive844.decotv.download.DownloadStore;
 import io.github.fugitive844.decotv.download.DownloadTask;
@@ -52,7 +52,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 播放离线缓存：与在线点播相同的小窗 / 全屏、手势、倍速，所有可播放缓存按影片分组、首尾循环切换。
+ * 播放离线缓存：与在线点播相同的小窗 / 全屏、手势、倍速。「选集」只列当前影片的分集，「全部缓存」按影片列出，
+ * 与直播的频道 / 换源一样在全屏时也直接显示。控制栏的上一个 / 下一个和播完续播按连播范围（全部缓存或仅本片）循环。
  * 加密缓存边读边解密；没缓存完的 m3u8 边存边播，缓存完成后在当前进度无缝切到最终文件。
  * 进度在有网络时照常同步到播放记录。
  */
@@ -62,28 +63,28 @@ public class OfflinePlayerActivity extends AppCompatActivity {
     private static final long SAVE_INTERVAL_MS = 5000;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final List<DownloadTask> episodes = new ArrayList<>();
+    private final List<DownloadTask> queue = new ArrayList<>();
     private ExoPlayer player;
     private PlayerView view;
     private PlayerGestures.Frame box;
     private PlayerLayout layout;
     private PlayerGestures gestures;
-    private TextView title, status, badge;
-    private TextView listTitle;
-    private LinearLayoutManager listLayout;
-    private LinearLayout cachePanel;
-    private TextView cachePanelTitle;
-    private RowAdapter<DownloadTask> cacheOverlay;
-    private LinearLayoutManager cacheOverlayLayout;
-    private boolean overlayShown;
+    private TextView title, meta, status, badge;
+    private final List<OfflinePlaylist.Title> titles = new ArrayList<>();
+    private TextView episodeTab, titleTab, tabCount, prevTitle, nextTitle, scopeButton;
+    private RecyclerView episodeList, titleList, panelEpisodeList, panelTitleList;
+    private EpisodeAdapter episodeAdapter, panelEpisodeAdapter;
+    private RowAdapter<OfflinePlaylist.Title> titleAdapter, panelTitleAdapter;
+    private GridLayoutManager panelEpisodeLayout;
+    private LinearLayout titlePanel, episodePanel;
+    private TextView titlePanelHead, episodePanelHead, panelScopeButton;
+    private boolean showingEpisodes, overlayShown, titleOnly;
     private int overlayWidth, overlayHeight;
-    private String overlayCurrentId = "";
     private DownloadTask currentTask;
     /** 正在边存边播的任务 id，没有为 null。 */
     private String streaming;
     private final DownloadStore.Listener storeListener = this::onStoreChanged;
     private TextView speedButton;
-    private RowAdapter<DownloadTask> list;
     private DanmakuController danmaku;
     private Video video;
     private int position;
@@ -105,7 +106,9 @@ public class OfflinePlayerActivity extends AppCompatActivity {
 
     /** 当前缓存和列表大小，供联调测试读取。 */
     public String currentCacheId() { return currentTask == null ? "" : currentTask.id; }
-    public int cacheCount() { return episodes.size(); }
+    public int cacheCount() { return queue.size(); }
+    public int titleCount() { return titles.size(); }
+    public boolean titleOnlyForTest() { return titleOnly; }
 
     /** 测试用：跳到指定位置、暂停。 */
     public void seekForTest(long ms) { player.seekTo(ms); }
@@ -133,8 +136,11 @@ public class OfflinePlayerActivity extends AppCompatActivity {
             finish();
             return;
         }
-        episodes.addAll(playableTasks());
-        position = OfflinePlaylist.indexOf(episodes, start.id);
+        queue.addAll(playableTasks());
+        titles.addAll(OfflinePlaylist.titles(queue));
+        titleOnly = DecoApp.get().prefs.offlineTitleOnly();
+        showingEpisodes = OfflinePlaylist.sameTitle(queue, start.videoKey).size() > 1;
+        position = OfflinePlaylist.indexOf(queue, start.id);
         if (position < 0) {
             Ui.toast(this, "该缓存暂时无法播放");
             finish();
@@ -147,8 +153,8 @@ public class OfflinePlayerActivity extends AppCompatActivity {
         player = new ExoPlayer.Builder(this).setSeekBackIncrementMs(10000).setSeekForwardIncrementMs(10000).build();
         view.setPlayer(controls(player));
         view.setFullscreenButtonClickListener(ignored -> layout.toggle());
-        // 全屏时也可以手动选择缓存，倍速从右上角快捷按钮进入。
-        view.findViewById(androidx.media3.ui.R.id.exo_settings).setOnClickListener(v -> playerMenu());
+        // 选集和缓存列表直接显示在页面和全屏浮层上，倍速在右上角，齿轮只剩弹幕设置。
+        view.findViewById(androidx.media3.ui.R.id.exo_settings).setOnClickListener(v -> danmaku.showPanel());
         view.findViewById(androidx.media3.ui.R.id.exo_prev).setContentDescription("上一个缓存");
         view.findViewById(androidx.media3.ui.R.id.exo_next).setContentDescription("下一个缓存");
         view.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener) v -> {
@@ -160,46 +166,13 @@ public class OfflinePlayerActivity extends AppCompatActivity {
         badge.setText("离线");
         badge.setVisibility(View.VISIBLE);
 
-        LinearLayout details = Ui.column(this, 12);
-        android.util.TypedValue bg = new android.util.TypedValue();
-        getTheme().resolveAttribute(android.R.attr.colorBackground, bg, true);
-        details.setBackgroundColor(bg.data);
-        title = Ui.text(this, "", 18, true);
-        details.addView(title);
-        status = Ui.text(this, "", 12, false);
-        status.setAlpha(0.6f);
-        details.addView(status);
-        LinearLayout actions = Ui.row(this);
-        actions.addView(button("上一个缓存", v -> step(-1)));
-        actions.addView(button("下一个缓存", v -> step(1)));
-        actions.addView(button("缓存列表", v -> chooseCache()));
-        actions.addView(button("弹幕", v -> danmaku.showPanel()));
-        HorizontalScrollView scroll = new HorizontalScrollView(this);
-        scroll.addView(actions);
-        details.addView(scroll);
-        listTitle = Ui.text(this, "", 15, true);
-        details.addView(listTitle);
-        list = new RowAdapter<DownloadTask>(42, 58, (h, t) -> {
-            DecoApp.get().images.offlineCover(h.image, t);
-            boolean playing = currentTask != null && t.id.equals(currentTask.id);
-            h.title.setText((playing ? "▶ " : "") + cacheLabel(t));
-            h.title.setTextColor(playing ? com.google.android.material.color.MaterialColors.getColor(h.title,
-                    androidx.appcompat.R.attr.colorPrimary) : Style.text(this));
-            h.subtitle.setText(t.sourceName + " · " + (t.state == DownloadTask.State.DONE ? t.format.label + " · " + t.container
-                    : "缓存中 " + Math.round(t.progress() * 100) + "% · 可边存边播"));
-        }).onClick((t, i) -> selectCache(t.id));
-        list.set(episodes);
-        RecyclerView rv = new RecyclerView(this);
-        listLayout = new LinearLayoutManager(this);
-        rv.setLayoutManager(listLayout);
-        rv.setAdapter(list);
-        details.addView(rv, Ui.fill(1));
+        View details = buildDetails();
 
         layout = new PlayerLayout(this, box, details);
         layout.setLeftButtonAboveList(true);
         speedButton = layout.addSpeedButton(DecoApp.get().prefs.playbackSpeed(), this::chooseSpeed, badge);
-        buildCacheOverlay();
-        layout.setOnChange(this::updateCacheOverlay);
+        buildOverlay();
+        layout.setOnChange(this::updateOverlay);
         setContentView(layout.view());
         danmaku = new DanmakuController(this, view, layout, player);
         gestures = new PlayerGestures(this, box, new PlayerGestures.Host() {
@@ -244,7 +217,7 @@ public class OfflinePlayerActivity extends AppCompatActivity {
 
             @Override public void onPlayerError(@NonNull PlaybackException error) {
                 playState = "failed:" + error.getErrorCodeName();
-                status.setText("播放失败：" + error.getMessage());
+                setStatus("播放失败：" + error.getMessage());
             }
 
             @Override public void onPlaybackParametersChanged(@NonNull androidx.media3.common.PlaybackParameters params) {
@@ -269,24 +242,30 @@ public class OfflinePlayerActivity extends AppCompatActivity {
     private void onStoreChanged() {
         if (currentTask == null || isFinishing()) return;
         int oldPosition = position;
-        episodes.clear();
-        episodes.addAll(playableTasks());
-        list.set(episodes);
-        if (episodes.isEmpty()) {
+        queue.clear();
+        queue.addAll(playableTasks());
+        titles.clear();
+        titles.addAll(OfflinePlaylist.titles(queue));
+        if (queue.isEmpty()) {
             save();
             player.stop();
             Ui.toast(this, "没有可播放的缓存");
             finish();
             return;
         }
-        position = OfflinePlaylist.indexOf(episodes, currentTask.id);
+        position = OfflinePlaylist.indexOf(queue, currentTask.id);
         if (position < 0) {
             save();
-            play(Math.min(oldPosition, episodes.size() - 1), 0);
+            // 当前集被删：仅本片时留在本片，否则接着播队列里的下一项。
+            List<DownloadTask> same = OfflinePlaylist.sameTitle(queue, currentTask.videoKey);
+            int next = Math.min(oldPosition, queue.size() - 1);
+            if (titleOnly && !same.isEmpty() && !queue.get(next).videoKey.equals(currentTask.videoKey))
+                next = OfflinePlaylist.indexOf(queue, same.get(0).id);
+            play(next, 0);
             return;
         }
-        updateListTitle();
-        DownloadTask t = episodes.get(position);
+        refreshLists(false);
+        DownloadTask t = queue.get(position);
         if (streaming != null && streaming.equals(t.id)) {
             if (t.state == DownloadTask.State.DONE) {
                 long at = player.getCurrentPosition();
@@ -296,7 +275,7 @@ public class OfflinePlayerActivity extends AppCompatActivity {
                 if (!wasPlaying) player.pause();
                 Ui.toast(this, "缓存完成，已切换到本地文件");
             } else {
-                status.setText(streamStatus(t));
+                setStatus(streamStatus(t));
             }
         }
     }
@@ -305,28 +284,200 @@ public class OfflinePlayerActivity extends AppCompatActivity {
         return "边存边播 · 已缓存 " + Math.round(t.progress() * 100) + "% · 没缓存到的部分在线加载并存入缓存";
     }
 
-    private MaterialButton button(String text, View.OnClickListener l) {
-        MaterialButton b = new MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle);
-        b.setText(text);
-        b.setOnClickListener(l);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+    // ---------- 小窗下方 ----------
+
+    private View buildDetails() {
+        LinearLayout box = Ui.column(this, 0);
+        box.setBackgroundColor(Style.bg(this));
+        LinearLayout info = Ui.column(this, 0);
+        info.setPadding(Ui.dp(this, 16), Ui.dp(this, 12), Ui.dp(this, 16), 0);
+        title = Style.single(Style.text(this, "", 18, 700, Style.text(this)));
+        info.addView(title);
+        meta = Style.single(Style.text(this, "", 13, 400, Style.text2(this)));
+        meta.setPadding(0, Ui.dp(this, 3), 0, 0);
+        info.addView(meta);
+        status = Style.text(this, "", 12, 400, Style.text3(this));
+        status.setMaxLines(2);
+        status.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        status.setPadding(0, Ui.dp(this, 3), 0, 0);
+        status.setVisibility(View.GONE);
+        info.addView(status);
+        box.addView(info);
+
+        // 跳到其他影片和连播范围；上一集 / 下一集在播放控制栏里
+        LinearLayout actions = Ui.row(this);
+        actions.setPadding(Ui.dp(this, 16), Ui.dp(this, 10), Ui.dp(this, 16), 0);
+        prevTitle = action("上一部", "上一部缓存", v -> stepTitle(-1));
+        nextTitle = action("下一部", "下一部缓存", v -> stepTitle(1));
+        scopeButton = action("", "", v -> toggleScope());
+        actions.addView(prevTitle);
+        actions.addView(nextTitle);
+        actions.addView(scopeButton);
+        actions.addView(action("弹幕", "弹幕设置", v -> danmaku.showPanel()));
+        android.widget.HorizontalScrollView scroll = new android.widget.HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        scroll.addView(actions);
+        box.addView(scroll);
+
+        LinearLayout tabs = Ui.row(this);
+        tabs.setPadding(Ui.dp(this, 16), Ui.dp(this, 8), Ui.dp(this, 16), Ui.dp(this, 4));
+        episodeTab = tab("选集");
+        titleTab = tab("全部缓存");
+        episodeTab.setOnClickListener(v -> { showTab(true); revealLists(); });
+        titleTab.setOnClickListener(v -> { showTab(false); revealLists(); });
+        tabs.addView(episodeTab);
+        tabs.addView(titleTab);
+        tabCount = Style.single(Style.text(this, "", 12, 400, Style.text3(this)));
+        tabCount.setGravity(android.view.Gravity.END);
+        tabs.addView(tabCount, Ui.weight(1));
+        box.addView(tabs);
+
+        episodeAdapter = new EpisodeAdapter();
+        episodeList = new RecyclerView(this);
+        episodeList.setContentDescription("本片选集");
+        episodeList.setLayoutManager(new GridLayoutManager(this, Math.max(5, getResources().getConfiguration().screenWidthDp / 72)));
+        episodeList.setAdapter(episodeAdapter);
+        episodeList.setItemAnimator(null);
+        episodeList.setPadding(Ui.dp(this, 12), 0, Ui.dp(this, 12), Ui.dp(this, 12));
+        episodeList.setClipToPadding(false);
+        box.addView(episodeList, Ui.fill(1));
+
+        titleAdapter = new RowAdapter<OfflinePlaylist.Title>(36, 50, (h, t) -> {
+            boolean selected = isCurrent(t);
+            DecoApp.get().images.offlineCover(h.image, t.first());
+            Style.single(h.title);
+            h.title.setText(t.first().title);
+            h.title.setTextColor(selected ? Style.accent(this) : Style.text(this));
+            h.subtitle.setText(titleSummary(t, selected));
+            h.itemView.setSelected(selected);
+            h.itemView.setBackground(selected ? Style.stroke(this, Style.accentSoft(this), Style.accent(this), 1.5f, 14)
+                    : Style.pressable(this, Style.surface(this), 14));
+        }).cards().onClick((t, i) -> selectTitle(t));
+        titleList = new RecyclerView(this);
+        titleList.setContentDescription("全部缓存列表");
+        titleList.setLayoutManager(new LinearLayoutManager(this));
+        titleList.setAdapter(titleAdapter);
+        titleList.setItemAnimator(null);
+        titleList.setPadding(0, 0, 0, Ui.dp(this, 12));
+        titleList.setClipToPadding(false);
+        box.addView(titleList, Ui.fill(1));
+        return box;
+    }
+
+    private TextView action(String text, String description, View.OnClickListener l) {
+        TextView t = Style.pill(this, text, false);
+        t.setContentDescription(description);
+        t.setOnClickListener(l);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, Ui.dp(this, 36));
         lp.rightMargin = Ui.dp(this, 8);
-        b.setLayoutParams(lp);
-        return b;
+        t.setLayoutParams(lp);
+        return t;
+    }
+
+    private TextView tab(String text) {
+        TextView t = Style.text(this, text, 16, 700, Style.text(this));
+        t.setPadding(0, Ui.dp(this, 6), Ui.dp(this, 20), Ui.dp(this, 6));
+        return t;
+    }
+
+    private void showTab(boolean episodes) {
+        showingEpisodes = episodes;
+        styleTab(episodeTab, episodes);
+        styleTab(titleTab, !episodes);
+        episodeList.setVisibility(episodes ? View.VISIBLE : View.GONE);
+        titleList.setVisibility(episodes ? View.GONE : View.VISIBLE);
+        updateTabCount();
+    }
+
+    private void styleTab(TextView t, boolean selected) {
+        t.setTextSize(selected ? 17 : 15);
+        Style.weight(t, selected ? 700 : 400);
+        t.setTextColor(selected ? Style.text(this) : Style.text3(this));
+    }
+
+    private void updateTabCount() {
+        List<DownloadTask> same = currentEpisodes();
+        if (showingEpisodes) {
+            int total = currentTask == null || video == null ? 0 : video.episodes.size();
+            tabCount.setText(total > same.size() ? "已缓存 " + same.size() + " / " + total + " 集" : "共 " + same.size() + " 集");
+        } else {
+            tabCount.setText(titles.size() + " 部 · " + queue.size() + " 个缓存");
+        }
+    }
+
+    private List<DownloadTask> currentEpisodes() {
+        return currentTask == null ? new ArrayList<>() : OfflinePlaylist.sameTitle(queue, currentTask.videoKey);
+    }
+
+    private boolean isCurrent(OfflinePlaylist.Title t) { return currentTask != null && t.key.equals(currentTask.videoKey); }
+
+    private String titleSummary(OfflinePlaylist.Title t, boolean selected) {
+        DownloadTask first = t.first();
+        String count = t.tasks.size() > 1 ? "已缓存 " + t.tasks.size() + " 集" : first.format.label;
+        return (selected ? "正在播放 · " : "") + count + (first.sourceName == null || first.sourceName.isEmpty() ? "" : " · " + first.sourceName);
+    }
+
+    /** 选集方格：与点播页相同，当前集强调色实心，之前的集变淡；只列已缓存的分集，文字是真实集号。 */
+    private final class EpisodeAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+        private final boolean overlay;
+        private final List<DownloadTask> items = new ArrayList<>();
+
+        EpisodeAdapter() { this(false); }
+
+        EpisodeAdapter(boolean overlay) { this.overlay = overlay; }
+
+        void set(List<DownloadTask> list) {
+            items.clear();
+            items.addAll(list);
+            notifyDataSetChanged();
+        }
+
+        @NonNull @Override public RecyclerView.ViewHolder onCreateViewHolder(@NonNull android.view.ViewGroup parent, int viewType) {
+            TextView t = Style.single(Style.text(parent.getContext(), "", overlay ? 14 : 15, 500, Style.text(parent.getContext())));
+            t.setGravity(android.view.Gravity.CENTER);
+            t.setPadding(Ui.dp(parent.getContext(), 4), 0, Ui.dp(parent.getContext(), 4), 0);
+            RecyclerView.LayoutParams lp = new RecyclerView.LayoutParams(RecyclerView.LayoutParams.MATCH_PARENT, Ui.dp(parent.getContext(), overlay ? 38 : 44));
+            int m = Ui.dp(parent.getContext(), overlay ? 3 : 4);
+            lp.setMargins(m, m, m, m);
+            t.setLayoutParams(lp);
+            return new RecyclerView.ViewHolder(t) { };
+        }
+
+        @Override public void onBindViewHolder(@NonNull RecyclerView.ViewHolder h, int i) {
+            DownloadTask task = items.get(i);
+            TextView t = (TextView) h.itemView;
+            t.setText(OfflinePlaylist.episodeLabel(task));
+            boolean current = currentTask != null && task.id.equals(currentTask.id);
+            int currentIndex = currentTask == null ? -1 : OfflinePlaylist.indexOf(items, currentTask.id);
+            int normal = overlay ? 0xFFFFFFFF : Style.text(OfflinePlayerActivity.this);
+            int watched = overlay ? 0x99FFFFFF : Style.text3(OfflinePlayerActivity.this);
+            t.setTextColor(current ? Style.onAccent(OfflinePlayerActivity.this) : i < currentIndex ? watched : normal);
+            Style.weight(t, current ? 700 : 500);
+            int fill = overlay ? 0x26FFFFFF : Style.surface2(OfflinePlayerActivity.this);
+            t.setBackground(Style.pressable(OfflinePlayerActivity.this, current ? Style.accent(OfflinePlayerActivity.this) : fill, 10));
+            t.setSelected(current);
+            t.setContentDescription(task.episodeTitle);
+            t.setOnClickListener(v -> {
+                if (overlay) view.showController();
+                selectCache(task.id);
+            });
+        }
+
+        @Override public int getItemCount() { return items.size(); }
     }
 
     private Player controls(ExoPlayer exo) {
         return new ForwardingPlayer(exo) {
             @Override public boolean isCommandAvailable(int c) {
                 if (c == COMMAND_SEEK_TO_NEXT || c == COMMAND_SEEK_TO_NEXT_MEDIA_ITEM
-                        || c == COMMAND_SEEK_TO_PREVIOUS || c == COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) return !episodes.isEmpty();
+                        || c == COMMAND_SEEK_TO_PREVIOUS || c == COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) return !queue.isEmpty();
                 return super.isCommandAvailable(c);
             }
 
             @NonNull @Override public Commands getAvailableCommands() {
                 return super.getAvailableCommands().buildUpon()
-                        .addIf(COMMAND_SEEK_TO_NEXT, !episodes.isEmpty()).addIf(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM, !episodes.isEmpty())
-                        .addIf(COMMAND_SEEK_TO_PREVIOUS, !episodes.isEmpty()).addIf(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM, !episodes.isEmpty()).build();
+                        .addIf(COMMAND_SEEK_TO_NEXT, !queue.isEmpty()).addIf(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM, !queue.isEmpty())
+                        .addIf(COMMAND_SEEK_TO_PREVIOUS, !queue.isEmpty()).addIf(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM, !queue.isEmpty()).build();
             }
 
             @Override public void seekToNext() { step(1); }
@@ -351,32 +502,67 @@ public class OfflinePlayerActivity extends AppCompatActivity {
                 }).show();
     }
 
-    private static String cacheLabel(DownloadTask t) { return t.title + " · " + t.episodeTitle; }
+    // ---------- 全屏浮层 ----------
 
-    /** 与直播频道列表一样：直接在全屏画面上点选缓存，不必先打开设置菜单。 */
-    private void buildCacheOverlay() {
-        cacheOverlay = new RowAdapter<DownloadTask>(0, 0, (h, t) -> {
-            boolean selected = currentTask != null && currentTask.id.equals(t.id);
-            h.title.setText((selected ? "▶ " : "") + cacheLabel(t));
-            h.title.setTextColor(selected ? 0xFF81E6BC : 0xFFFFFFFF);
-            h.subtitle.setText(t.format.label + (t.state == DownloadTask.State.DONE ? "" : " · 边存边播"));
-            h.subtitle.setTextColor(0xCCFFFFFF);
-            h.itemView.setBackgroundColor(selected ? 0x335AD9A5 : 0);
+    /** 与直播全屏的频道 / 换源一样：控制栏显示时，左边全部缓存、右边本片选集，直接点选。 */
+    private void buildOverlay() {
+        panelTitleAdapter = new RowAdapter<OfflinePlaylist.Title>(30, 42, (h, t) -> {
+            boolean selected = isCurrent(t);
+            DecoApp.get().images.offlineCover(h.image, t.first());
+            Style.single(h.title);
+            h.title.setText(t.first().title);
+            h.title.setTextColor(0xFFFFFFFF);
+            h.title.setTextSize(14);
+            Style.weight(h.title, selected ? 700 : 500);
+            h.subtitle.setText(t.tasks.size() > 1 ? t.tasks.size() + " 集" : t.first().format.label);
+            h.subtitle.setTextColor(0xB3FFFFFF);
+            Style.single(h.subtitle);
+            int p = Ui.dp(this, 8);
+            h.itemView.setPadding(p, Ui.dp(this, 6), p, Ui.dp(this, 6));
+            h.itemView.setBackground(Style.pressable(this, selected ? 0x33FFFFFF : 0, 10));
             h.itemView.setSelected(selected);
         }).onClick((t, i) -> {
             view.showController();
-            selectCache(t.id);
+            selectTitle(t);
         });
+        panelTitleList = panelList("全屏缓存列表");
+        panelTitleList.setLayoutManager(new LinearLayoutManager(this));
+        panelTitleList.setAdapter(panelTitleAdapter);
+        titlePanelHead = panelHead();
+        titlePanel = panel(titlePanelHead, null, panelTitleList);
+
+        panelEpisodeAdapter = new EpisodeAdapter(true);
+        panelEpisodeList = panelList("全屏选集");
+        panelEpisodeLayout = new GridLayoutManager(this, 3);
+        panelEpisodeList.setLayoutManager(panelEpisodeLayout);
+        panelEpisodeList.setAdapter(panelEpisodeAdapter);
+        int gridPad = Ui.dp(this, 5);
+        panelEpisodeList.setPadding(gridPad, 0, gridPad, gridPad);
+        panelEpisodeList.setClipToPadding(false);
+        episodePanelHead = panelHead();
+        panelScopeButton = Style.single(Ui.text(this, "", 12, false));
+        panelScopeButton.setGravity(android.view.Gravity.CENTER);
+        panelScopeButton.setMinHeight(Ui.dp(this, 32));
+        panelScopeButton.setOnClickListener(v -> {
+            view.showController();
+            toggleScope();
+        });
+        episodePanel = panel(episodePanelHead, panelScopeButton, panelEpisodeList);
+
+        box.addView(titlePanel, new android.widget.FrameLayout.LayoutParams(0, 0));
+        box.addView(episodePanel, new android.widget.FrameLayout.LayoutParams(0, 0));
+        box.exempt(titlePanel);
+        box.exempt(episodePanel);
+        box.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (r - l != or - ol || b - t != ob - ot) v.post(this::updateOverlay);
+        });
+    }
+
+    private RecyclerView panelList(String description) {
         RecyclerView items = new RecyclerView(this);
-        items.setContentDescription("全屏缓存列表");
-        cacheOverlayLayout = new LinearLayoutManager(this);
-        items.setLayoutManager(cacheOverlayLayout);
-        items.setAdapter(cacheOverlay);
+        items.setContentDescription(description);
         items.setItemAnimator(null);
-        items.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
-            if (overlayShown && (r - l != or - ol || b - t != ob - ot))
-                v.post(this::revealCacheOverlay);
-        });
+        // 浏览列表时保持控制栏显示，免得滑着滑着浮层消失
         items.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
             @Override public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull android.view.MotionEvent event) {
                 view.showController();
@@ -388,104 +574,153 @@ public class OfflinePlayerActivity extends AppCompatActivity {
                 if (rv.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) view.showController();
             }
         });
-        cachePanel = Ui.column(this, 0);
-        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
-        bg.setCornerRadius(Ui.dp(this, 12));
-        bg.setColor(0xB3000000);
-        cachePanel.setBackground(bg);
-        cachePanel.setClickable(true);
-        cachePanelTitle = Ui.text(this, "缓存列表", 14, true);
-        cachePanelTitle.setTextColor(0xCCFFFFFF);
-        cachePanelTitle.setPadding(Ui.dp(this, 12), Ui.dp(this, 10), Ui.dp(this, 12), Ui.dp(this, 6));
-        cachePanel.addView(cachePanelTitle);
-        cachePanel.addView(items, Ui.fill(1));
-        cachePanel.setVisibility(View.GONE);
-        box.addView(cachePanel, new android.widget.FrameLayout.LayoutParams(0, 0));
-        box.exempt(cachePanel);
-        box.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
-            if (r - l != or - ol || b - t != ob - ot) v.post(this::updateCacheOverlay);
-        });
+        return items;
     }
 
-    private void updateCacheOverlay() {
-        if (cachePanel == null) return;
-        boolean show = layout.fullscreen() && layout.controlsVisible() && !episodes.isEmpty();
+    private TextView panelHead() {
+        TextView head = Style.single(Ui.text(this, "", 14, true));
+        head.setTextColor(0xCCFFFFFF);
+        head.setPadding(Ui.dp(this, 12), Ui.dp(this, 10), Ui.dp(this, 12), Ui.dp(this, 6));
+        return head;
+    }
+
+    private LinearLayout panel(TextView head, View extra, RecyclerView body) {
+        LinearLayout panel = Ui.column(this, 0);
+        panel.setBackground(Style.round(this, 0xB3000000, 12));
+        panel.setClickable(true);
+        panel.addView(head);
+        if (extra != null) {
+            LinearLayout.LayoutParams lp = Style.margins(this, 8, 0, 8, 6);
+            panel.addView(extra, lp);
+        }
+        panel.addView(body, Ui.fill(1));
+        panel.setVisibility(View.GONE);
+        return panel;
+    }
+
+    /** 全屏且控制栏显示时才显示；横屏分列两侧避开中间的播放按钮，竖屏并排放在播放按钮下方。 */
+    private void updateOverlay() {
+        if (titlePanel == null) return;
+        boolean show = layout.fullscreen() && layout.controlsVisible() && !queue.isEmpty();
+        boolean episodes = show && currentEpisodes().size() > 1;
         int width = box.getWidth(), height = box.getHeight();
         boolean resized = overlayWidth != width || overlayHeight != height;
         overlayWidth = width;
         overlayHeight = height;
         if (show && width > 0 && height > 0) {
-            int edge = Ui.dp(this, 12), top = Ui.dp(this, 64), bottom = Ui.dp(this, 84);
-            boolean portrait = height > width;
-            // 竖屏全屏时列表只占左上区域，为中间的播放/上下项按钮留出空间。
-            int panelWidth = Math.min(Ui.dp(this, 260), (int) (width * (portrait ? 0.65f : 0.28f)));
-            int panelHeight = portrait ? Math.max(0, height / 2 - top - Ui.dp(this, 64))
-                    : android.widget.FrameLayout.LayoutParams.MATCH_PARENT;
-            android.widget.FrameLayout.LayoutParams lp = new android.widget.FrameLayout.LayoutParams(
-                    panelWidth, panelHeight, android.view.Gravity.TOP | android.view.Gravity.START);
-            lp.setMargins(edge, top, 0, portrait ? 0 : bottom);
-            cachePanel.setLayoutParams(lp);
+            int edge = Ui.dp(this, 12);
+            android.widget.FrameLayout.LayoutParams left, right;
+            if (height > width) {
+                int top = height / 2 + Ui.dp(this, 48), bottom = Ui.dp(this, 104);
+                int panelHeight = Math.max(0, height - top - bottom);
+                int half = (width - edge * 3) / 2;
+                left = new android.widget.FrameLayout.LayoutParams(episodes ? half : width - edge * 2, panelHeight, android.view.Gravity.TOP | android.view.Gravity.START);
+                left.setMargins(edge, top, 0, 0);
+                right = new android.widget.FrameLayout.LayoutParams(half, panelHeight, android.view.Gravity.TOP | android.view.Gravity.END);
+                right.setMargins(0, top, edge, 0);
+            } else {
+                // 中间一排播放按钮（含点击区域）约 300dp 宽；手机右上方有旋转按钮，选集面板从它下方开始。
+                int controls = Ui.dp(this, 156), top = Ui.dp(this, 64), bottom = Ui.dp(this, 84);
+                int rightTop = PlayerLayout.tablet(this) ? top : height / 2 - Ui.dp(this, 68);
+                left = new android.widget.FrameLayout.LayoutParams(Math.min(Ui.dp(this, 260), width / 2 - controls - edge),
+                        android.widget.FrameLayout.LayoutParams.MATCH_PARENT, android.view.Gravity.START);
+                left.setMargins(edge, top, 0, bottom);
+                right = new android.widget.FrameLayout.LayoutParams(Math.min(Ui.dp(this, 260), width / 2 - controls - edge),
+                        android.widget.FrameLayout.LayoutParams.MATCH_PARENT, android.view.Gravity.END);
+                right.setMargins(0, rightTop, edge, bottom);
+            }
+            titlePanel.setLayoutParams(left);
+            episodePanel.setLayoutParams(right);
+            panelEpisodeLayout.setSpanCount(Math.max(3, (right.width - Ui.dp(this, 10)) / Ui.dp(this, 48)));
         }
-        cachePanel.setVisibility(show ? View.VISIBLE : View.GONE);
-        if (show && (!overlayShown || resized)) revealCacheOverlay();
+        titlePanel.setVisibility(show ? View.VISIBLE : View.GONE);
+        episodePanel.setVisibility(episodes ? View.VISIBLE : View.GONE);
+        if (show && (!overlayShown || resized)) revealLists();
         overlayShown = show;
     }
 
-    private void revealCacheOverlay() {
-        int first = cacheOverlayLayout.findFirstCompletelyVisibleItemPosition();
-        int last = cacheOverlayLayout.findLastCompletelyVisibleItemPosition();
-        if (first == RecyclerView.NO_POSITION || position < first || position > last)
-            cacheOverlayLayout.scrollToPositionWithOffset(position, 0);
-    }
-
-    private void updateListTitle() {
-        listTitle.setText("缓存列表 · " + (position + 1) + "/" + episodes.size() + " · 循环播放");
-        if (cacheOverlay != null) {
-            cachePanelTitle.setText("缓存列表 · " + (position + 1) + "/" + episodes.size());
-            cacheOverlay.set(episodes);
-            String id = currentTask == null ? "" : currentTask.id;
-            boolean changed = !id.equals(overlayCurrentId);
-            overlayCurrentId = id;
-            updateCacheOverlay();
-            if (changed && overlayShown) revealCacheOverlay();
+    /** 选集、缓存列表把当前项滚到可见范围。 */
+    private void revealLists() {
+        if (currentTask == null) return;
+        int episode = OfflinePlaylist.indexOf(currentEpisodes(), currentTask.id);
+        int movie = OfflinePlaylist.indexOfTitle(titles, currentTask.videoKey);
+        if (episode >= 0) {
+            episodeList.scrollToPosition(episode);
+            if (panelEpisodeList != null) panelEpisodeList.scrollToPosition(episode);
+        }
+        if (movie >= 0) {
+            titleList.scrollToPosition(movie);
+            if (panelTitleList != null) panelTitleList.scrollToPosition(movie);
         }
     }
 
-    private void playerMenu() {
-        new com.google.android.material.dialog.MaterialAlertDialogBuilder(this).setTitle("播放设置")
-                .setItems(new String[]{"缓存列表", "弹幕设置"}, (d, which) -> {
-                    if (which == 0) chooseCache();
-                    else danmaku.showPanel();
-                }).show();
+    /** 播放项或缓存变化后同步所有列表和按钮；moved 表示换了片，要把新的当前项滚出来。 */
+    private void refreshLists(boolean moved) {
+        List<DownloadTask> same = currentEpisodes();
+        boolean series = same.size() > 1;
+        episodeAdapter.set(same);
+        titleAdapter.set(titles);
+        episodeTab.setVisibility(series ? View.VISIBLE : View.GONE);
+        if (!series) showingEpisodes = false;
+        boolean manyTitles = titles.size() > 1;
+        prevTitle.setEnabled(manyTitles);
+        nextTitle.setEnabled(manyTitles);
+        prevTitle.setAlpha(manyTitles ? 1f : 0.5f);
+        nextTitle.setAlpha(manyTitles ? 1f : 0.5f);
+        String scope = titleOnly ? "连播：仅本片" : "连播：全部缓存";
+        scopeButton.setText(scope);
+        scopeButton.setContentDescription(scope);
+        Style.pill(scopeButton, titleOnly);
+        scopeButton.setVisibility(series ? View.VISIBLE : View.GONE);
+        showTab(showingEpisodes);
+        if (panelTitleAdapter != null) {
+            panelTitleAdapter.set(titles);
+            panelEpisodeAdapter.set(same);
+            titlePanelHead.setText("全部缓存 · " + titles.size() + " 部");
+            episodePanelHead.setText("选集 · " + (OfflinePlaylist.indexOf(same, currentTask.id) + 1) + "/" + same.size());
+            panelScopeButton.setText(scope);
+            panelScopeButton.setContentDescription(scope);
+            panelScopeButton.setTextColor(titleOnly ? 0xFF06140E : 0xFFFFFFFF);
+            panelScopeButton.setBackground(Style.pressable(this, titleOnly ? 0xFF3DDB9A : 0x26FFFFFF, 8));
+            updateOverlay();
+        }
+        if (moved) revealLists();
     }
 
-    private void chooseCache() {
-        // 对话框使用快照，下载期间列表变化也不会选错任务。
-        List<DownloadTask> choices = new ArrayList<>(episodes);
-        String[] labels = new String[choices.size()];
-        for (int i = 0; i < labels.length; i++) {
-            DownloadTask t = choices.get(i);
-            labels[i] = cacheLabel(t) + " · " + t.format.label;
-        }
-        new com.google.android.material.dialog.MaterialAlertDialogBuilder(this).setTitle("缓存列表")
-                .setSingleChoiceItems(labels, OfflinePlaylist.indexOf(choices, currentTask.id), (d, which) -> {
-                    selectCache(choices.get(which).id);
-                    d.dismiss();
-                }).show();
+    // ---------- 切换 ----------
+
+    private void toggleScope() {
+        titleOnly = !titleOnly;
+        DecoApp.get().prefs.setOfflineTitleOnly(titleOnly);
+        refreshLists(false);
     }
 
     private void selectCache(String id) {
-        int next = OfflinePlaylist.indexOf(episodes, id);
+        int next = OfflinePlaylist.indexOf(queue, id);
         if (next < 0 || (currentTask != null && currentTask.id.equals(id))) return;
         save();
         play(next, 0);
     }
 
+    /** 点影片：已在播放就不打断，否则从它最前面的已缓存分集开始。 */
+    private void selectTitle(OfflinePlaylist.Title t) {
+        if (!isCurrent(t)) selectCache(t.first().id);
+    }
+
+    /** 上一部 / 下一部：跳到其他影片，首尾循环。 */
+    private void stepTitle(int delta) {
+        int next = OfflinePlaylist.step(OfflinePlaylist.indexOfTitle(titles, currentTask.videoKey), delta, titles.size());
+        if (next >= 0) selectTitle(titles.get(next));
+    }
+
+    /** 上一个 / 下一个和播完续播：按连播范围循环；全部缓存时到片尾接着切到其他影片。 */
     private void step(int delta) {
-        int next = OfflinePlaylist.step(position, delta, episodes.size());
+        List<DownloadTask> same = currentEpisodes();
+        List<DownloadTask> scope = titleOnly && same.size() > 1 ? same : queue;
+        int next = OfflinePlaylist.step(OfflinePlaylist.indexOf(scope, currentTask.id), delta, scope.size());
         if (next < 0) return;
         save();
-        play(next, 0);
+        play(OfflinePlaylist.indexOf(queue, scope.get(next).id), 0);
     }
 
     private MediaSource source(DownloadTask t) {
@@ -505,8 +740,20 @@ public class OfflinePlayerActivity extends AppCompatActivity {
         return new ProgressiveMediaSource.Factory(files).createMediaSource(MediaItem.fromUri(uri));
     }
 
+    private static String joinMeta(DownloadTask t) {
+        StringBuilder b = new StringBuilder(t.episodeTitle == null ? "" : t.episodeTitle);
+        if (t.sourceName != null && !t.sourceName.isEmpty()) b.append(b.length() > 0 ? " · " : "").append(t.sourceName);
+        if (t.state == DownloadTask.State.DONE) b.append(b.length() > 0 ? " · " : "").append(t.format.label);
+        return b.toString();
+    }
+
+    private void setStatus(String text) {
+        status.setText(text);
+        status.setVisibility(text.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
     private void play(int i, long startMs) {
-        DownloadTask t = episodes.get(i);
+        DownloadTask t = queue.get(i);
         String previous = streaming;
         if (t.state != DownloadTask.State.DONE && !Stream.available(this, t)) {
             Ui.toast(this, "该缓存暂时无法播放");
@@ -522,16 +769,13 @@ public class OfflinePlayerActivity extends AppCompatActivity {
             video = null;
         }
         setTitle(t.title);
-        title.setText(cacheLabel(t));
+        title.setText(t.title);
+        meta.setText(joinMeta(t));
         streaming = t.state == DownloadTask.State.DONE ? null : t.id;
         if (streaming != null && !streaming.equals(previous)) Stream.acquire(streaming);
-        status.setText(streaming != null ? streamStatus(t) : "离线播放 · " + t.format.label + " · " + t.container);
+        setStatus(streaming != null ? streamStatus(t) : "");
         badge.setText(streaming != null ? "边存边播" : "离线");
-        list.notifyDataSetChanged();
-        updateListTitle();
-        int first = listLayout.findFirstCompletelyVisibleItemPosition();
-        int last = listLayout.findLastCompletelyVisibleItemPosition();
-        if (first == RecyclerView.NO_POSITION || position < first || position > last) listLayout.scrollToPositionWithOffset(position, 0);
+        refreshLists(true);
         playState = "loading";
         danmaku.load(t.title, video == null ? "" : video.year, t.episode, DownloadTask.danmakuFile(this, t.id));
         player.setMediaSource(source(t));
