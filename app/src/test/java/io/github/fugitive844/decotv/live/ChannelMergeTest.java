@@ -39,4 +39,26 @@ public class ChannelMergeTest {
     @Test public void unmergedChannelHasItsOwnUrlAsOnlySource() {
         assertEquals(Arrays.asList("http://x"), ch("A", "g", "http://x", "").sources());
     }
+
+    @Test public void ipSourcesComeFirstKeepingOrderWithinEachType() {
+        String domainA = "https://first.example/live.m3u8";
+        String ipv4 = "http://192.0.2.1:8080/live.m3u8";
+        String domainB = "https://second.example/live.m3u8";
+        String ipv6 = "http://[2001:db8::1]:8080/live.m3u8";
+        Channel channel = ChannelMerge.merge(Arrays.asList(
+                ch("A", "g", domainA, ""), ch("A", "g", ipv4, ""),
+                ch("A", "g", domainB, ""), ch("A", "g", ipv6, ""),
+                ch("A", "g", ipv4, ""))).get(0);
+        assertEquals(Arrays.asList(ipv4, ipv6, domainA, domainB), channel.sources());
+        assertEquals(ipv4, channel.url);
+    }
+
+    @Test public void ipInPathOrQueryDoesNotMakeDomainAnIpSource() {
+        String domain = "https://video.example/192.0.2.3?url=http://192.0.2.4/live";
+        String invalid = "http://999.1.2.3/live";
+        String ip = "http://198.51.100.2/live";
+        Channel channel = ChannelMerge.merge(Arrays.asList(ch("A", "g", domain, ""),
+                ch("A", "g", invalid, ""), ch("A", "g", ip, ""))).get(0);
+        assertEquals(Arrays.asList(ip, domain, invalid), channel.sources());
+    }
 }
