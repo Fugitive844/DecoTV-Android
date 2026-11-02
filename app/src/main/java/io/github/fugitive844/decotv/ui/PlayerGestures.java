@@ -53,7 +53,7 @@ final class PlayerGestures {
     private float downX, downY, startBrightness;
     private int startVolume;
     private long startPosition, seekTarget = -1;
-    private boolean holding, ignored;
+    private boolean holding, ignored, touching, moved;
     private final Runnable hide = () -> PlayerGestures.this.indicatorView().setVisibility(View.GONE);
 
     /**
@@ -63,7 +63,7 @@ final class PlayerGestures {
     static final class Frame extends FrameLayout {
         private PlayerGestures gestures;
         private final java.util.List<View> exempt = new java.util.ArrayList<>();
-        private boolean skip;
+        private boolean skip, intercept;
 
         Frame(android.content.Context c) { super(c); }
 
@@ -78,14 +78,28 @@ final class PlayerGestures {
             return false;
         }
 
-        @Override public boolean onInterceptTouchEvent(MotionEvent e) {
+        @Override public boolean dispatchTouchEvent(MotionEvent e) {
             if (e.getActionMasked() == MotionEvent.ACTION_DOWN) skip = onExempt(e);
-            return !skip && gestures != null && gestures.handle(e);
+            // 每个事件只处理一次；子 View 接管触摸后仍能收到松手/取消，避免长按状态残留。
+            intercept = !skip && gestures != null && gestures.handle(e);
+            return super.dispatchTouchEvent(e);
+        }
+
+        @Override public boolean onInterceptTouchEvent(MotionEvent e) {
+            return intercept;
+        }
+
+        @Override public void requestDisallowInterceptTouchEvent(boolean disallow) {
+            if (disallow && gestures != null) {
+                // 时间轴等控件自己拖动时，撤销播放器的长按识别。
+                skip = true;
+                gestures.cancel();
+            }
+            super.requestDisallowInterceptTouchEvent(disallow);
         }
 
         @SuppressLint("ClickableViewAccessibility")
         @Override public boolean onTouchEvent(MotionEvent e) {
-            if (!skip && gestures != null) gestures.handle(e);
             return true;
         }
     }
@@ -120,7 +134,8 @@ final class PlayerGestures {
             }
 
             @Override public void onLongPress(@NonNull MotionEvent e) {
-                if (ignored || mode != NONE || e.getX() < target.getWidth() / 2f || !host.playing()) return;
+                if (!touching || moved || holding || ignored || mode != NONE
+                        || e.getX() < target.getWidth() / 2f || !host.playing()) return;
                 holding = true;
                 host.holdSpeed(true);
                 show("2 倍速播放中 ▶▶", false);
@@ -132,31 +147,45 @@ final class PlayerGestures {
 
     /** 处理一个触摸事件，返回是否已进入手势（需要拦截）。 */
     private boolean handle(MotionEvent e) {
-        detector.onTouchEvent(e);
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN:
+                stopHolding();
                 downX = e.getX();
                 downY = e.getY();
                 mode = NONE;
+                seekTarget = -1;
+                touching = true;
+                moved = false;
                 // 贴近上下边缘起手多半是系统手势（下拉通知栏、返回桌面），不处理
                 int edge = Ui.dp(activity, 24);
                 ignored = downY < edge || downY > target.getHeight() - edge;
+                detector.onTouchEvent(e);
                 return false;
             case MotionEvent.ACTION_MOVE:
-                if (ignored || holding) return holding;
-                return onMove(e.getX() - downX, e.getY() - downY);
+                if (ignored || !touching) return false;
+                float dx = e.getX() - downX, dy = e.getY() - downY;
+                if (!moved && (Math.abs(dx) >= slop || Math.abs(dy) >= slop)) {
+                    moved = true;
+                    cancelDetector();
+                    stopHolding();
+                }
+                if (moved) return onMove(dx, dy);
+                detector.onTouchEvent(e);
+                return holding;
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
                 boolean consumed = mode != NONE || holding;
-                if (holding) {
-                    holding = false;
-                    host.holdSpeed(false);
-                }
-                if (mode == SEEK && seekTarget >= 0) host.seekTo(seekTarget);
+                touching = false;
+                if (!moved) detector.onTouchEvent(e);
+                stopHolding();
+                if (e.getActionMasked() == MotionEvent.ACTION_UP && mode == SEEK && seekTarget >= 0) host.seekTo(seekTarget);
                 mode = NONE;
                 seekTarget = -1;
                 if (consumed) hideLater();
                 return consumed;
+            case MotionEvent.ACTION_POINTER_DOWN:
+                cancel();
+                return false;
             default:
                 return mode != NONE;
         }
@@ -166,8 +195,6 @@ final class PlayerGestures {
         int width = Math.max(1, target.getWidth()), height = Math.max(1, target.getHeight());
         if (mode == NONE) {
             if (Math.abs(dx) < slop && Math.abs(dy) < slop) return false;
-            // 长按后再移动不算滑动手势
-            if (holding) return true;
             if (Math.abs(dx) > Math.abs(dy)) {
                 if (!host.seekable() || host.duration() <= 0) return false;
                 mode = SEEK;
@@ -226,7 +253,33 @@ final class PlayerGestures {
         handler.postDelayed(hide, 600);
     }
 
-    void release() { handler.removeCallbacksAndMessages(null); }
+    private void stopHolding() {
+        if (!holding) return;
+        holding = false;
+        host.holdSpeed(false);
+    }
+
+    private void cancelDetector() {
+        long now = android.os.SystemClock.uptimeMillis();
+        MotionEvent cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0, 0, 0);
+        detector.onTouchEvent(cancel);
+        cancel.recycle();
+    }
+
+    void cancel() {
+        touching = false;
+        ignored = true;
+        mode = NONE;
+        seekTarget = -1;
+        cancelDetector();
+        stopHolding();
+        indicator.setVisibility(View.GONE);
+    }
+
+    void release() {
+        cancel();
+        handler.removeCallbacksAndMessages(null);
+    }
 
     static String clock(long ms) {
         long s = Math.max(0, ms / 1000);

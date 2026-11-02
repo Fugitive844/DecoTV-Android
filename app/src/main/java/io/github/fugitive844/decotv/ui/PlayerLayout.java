@@ -23,6 +23,7 @@ final class PlayerLayout {
     private final View details;
     private final TextView rotate;
     private View left;
+    private TextView speedButton;
     private Runnable onChange;
     private boolean fullscreen, portraitVideo, portraitFullscreen, controls = true;
 
@@ -68,6 +69,31 @@ final class PlayerLayout {
         left = button;
         box.addView(button, sideParams(activity, Gravity.START));
         updateRotate();
+    }
+
+    /** 倍速快捷入口位于播放画面右上角，直连/离线角标在其左侧。 */
+    TextView addSpeedButton(float speed, Runnable choose, TextView badge) {
+        LinearLayout topRight = Ui.row(activity);
+        topRight.setGravity(Gravity.CENTER_VERTICAL);
+        box.removeView(badge);
+        LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        badgeLp.rightMargin = Ui.dp(activity, 8);
+        topRight.addView(badge, badgeLp);
+        speedButton = Ui.routeBadge(activity);
+        speedButton.setText(PlayerActivity.speedLabel(speed));
+        speedButton.setTextSize(14);
+        speedButton.setAlpha(1f);
+        speedButton.setGravity(Gravity.CENTER);
+        speedButton.setMinWidth(Ui.dp(activity, 60));
+        speedButton.setContentDescription("播放倍速");
+        speedButton.setOnClickListener(v -> choose.run());
+        topRight.addView(speedButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, Ui.dp(activity, 44)));
+        box.addView(topRight, Ui.badgeParams(activity));
+        if (box instanceof PlayerGestures.Frame) ((PlayerGestures.Frame) box).exempt(topRight);
+        updateRotate();
+        return speedButton;
     }
 
     View view() { return root; }
@@ -159,6 +185,7 @@ final class PlayerLayout {
     private void updateRotate() {
         rotate.setVisibility(fullscreen && controls && !tablet(activity) ? View.VISIBLE : View.GONE);
         if (left != null) left.setVisibility(controls ? View.VISIBLE : View.GONE);
+        if (speedButton != null) speedButton.setVisibility(controls ? View.VISIBLE : View.GONE);
         if (onChange != null) onChange.run();
     }
 }

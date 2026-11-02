@@ -5,6 +5,7 @@ import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.matcher.RootMatchers.isDialog;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
+import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 
 import android.app.Activity;
 import android.graphics.Bitmap;
@@ -277,6 +278,13 @@ public class OfflinePlaylistFlowTest {
         try (ActivityScenario<PlayerActivity> scene = ActivityScenario.launch(PlayerActivity.intent(app, v, 0, 0))) {
             await(scene, x -> x.playbackState().startsWith("ready:"));
             scene.onActivity(OfflinePlaylistFlowTest::half);
+            scene.onActivity(x -> {
+                player(x.getWindow().getDecorView()).getPlayer().pause();
+                player(x.getWindow().getDecorView()).showController();
+            });
+            onView(withContentDescription("播放倍速")).perform(click());
+            onView(withText("1.5x")).inRoot(isDialog()).perform(click());
+            scene.onActivity(x -> assertEquals(1.5f, player(x.getWindow().getDecorView()).getPlayer().getPlaybackParameters().speed, 0.001f));
             shot("vod-half");
         }
         Channel channel = new Channel(); channel.name = "本地测试频道"; channel.url = v.episodes.get(0);
@@ -328,6 +336,101 @@ public class OfflinePlaylistFlowTest {
         try (ActivityScenario<OfflinePlayerActivity> scene = ActivityScenario.launch(OfflinePlayerActivity.intent(app, done.id))) {
             ready(scene, done);
             scene.onActivity(OfflinePlaylistFlowTest::half);
+        }
+    }
+
+    private static void touch(ActivityScenario<OfflinePlayerActivity> scene, long down, int action, float x) {
+        scene.onActivity(a -> {
+            View box = (View) player(a.getWindow().getDecorView()).getParent();
+            android.view.MotionEvent event = android.view.MotionEvent.obtain(down, android.os.SystemClock.uptimeMillis(),
+                    action, box.getWidth() * x, box.getHeight() * 0.35f, 0);
+            box.dispatchTouchEvent(event);
+            event.recycle();
+        });
+    }
+
+    private static void assertSpeed(ActivityScenario<OfflinePlayerActivity> scene, float speed) {
+        scene.onActivity(a -> assertEquals(speed,
+                player(a.getWindow().getDecorView()).getPlayer().getPlaybackParameters().speed, 0.001f));
+    }
+
+    @Test public void horizontalSwipesCancelHoldSpeedAndAlwaysRestoreOriginalSpeed() throws Exception {
+        DownloadTask task = add("手势回归", 0, 1, System.currentTimeMillis(), DownloadTask.Format.ENCRYPTED);
+        try (ActivityScenario<OfflinePlayerActivity> scene = ActivityScenario.launch(OfflinePlayerActivity.intent(app, task.id))) {
+            ready(scene, task);
+            scene.onActivity(a -> {
+                androidx.media3.common.Player p = player(a.getWindow().getDecorView()).getPlayer();
+                p.setPlaybackSpeed(1.25f);
+                p.seekTo(15000);
+                p.play();
+            });
+            await(scene, a -> player(a.getWindow().getDecorView()).getPlayer().isPlaying());
+            long delay = android.view.ViewConfiguration.getLongPressTimeout() + 200;
+            long down = android.os.SystemClock.uptimeMillis();
+            touch(scene, down, android.view.MotionEvent.ACTION_DOWN, 0.85f);
+            touch(scene, down, android.view.MotionEvent.ACTION_MOVE, 0.65f);
+            Thread.sleep(delay);
+            assertSpeed(scene, 1.25f);
+            touch(scene, down, android.view.MotionEvent.ACTION_UP, 0.65f);
+            assertSpeed(scene, 1.25f);
+            await(scene, a -> player(a.getWindow().getDecorView()).getPlayer().isPlaying());
+
+            // 先静止长按，再转成左右滑动，必须立即退出倍速并允许快进。
+            down = android.os.SystemClock.uptimeMillis();
+            touch(scene, down, android.view.MotionEvent.ACTION_DOWN, 0.7f);
+            Thread.sleep(delay);
+            assertSpeed(scene, 2f);
+            touch(scene, down, android.view.MotionEvent.ACTION_MOVE, 0.85f);
+            assertSpeed(scene, 1.25f);
+            touch(scene, down, android.view.MotionEvent.ACTION_UP, 0.85f);
+            assertSpeed(scene, 1.25f);
+            await(scene, a -> player(a.getWindow().getDecorView()).getPlayer().isPlaying());
+
+            // 取消触摸恢复原速，不残留长按识别。
+            down = android.os.SystemClock.uptimeMillis();
+            touch(scene, down, android.view.MotionEvent.ACTION_DOWN, 0.7f);
+            Thread.sleep(delay);
+            assertSpeed(scene, 2f);
+            touch(scene, down, android.view.MotionEvent.ACTION_CANCEL, 0.7f);
+            assertSpeed(scene, 1.25f);
+
+            // 时间轴等子控件接管拖动后，不能再触发播放器的长按计时器。
+            down = android.os.SystemClock.uptimeMillis();
+            touch(scene, down, android.view.MotionEvent.ACTION_DOWN, 0.7f);
+            scene.onActivity(a -> a.findViewById(androidx.media3.ui.R.id.exo_progress)
+                    .getParent().requestDisallowInterceptTouchEvent(true));
+            Thread.sleep(delay);
+            assertSpeed(scene, 1.25f);
+            touch(scene, down, android.view.MotionEvent.ACTION_UP, 0.7f);
+            Thread.sleep(delay);
+            assertSpeed(scene, 1.25f);
+
+            // 普通长按后松手也必须恢复，不能把 2x 记成用户选择的倍速。
+            scene.onActivity(a -> {
+                player(a.getWindow().getDecorView()).getPlayer().seekTo(5000);
+                player(a.getWindow().getDecorView()).getPlayer().play();
+            });
+            await(scene, a -> player(a.getWindow().getDecorView()).getPlayer().isPlaying());
+            down = android.os.SystemClock.uptimeMillis();
+            touch(scene, down, android.view.MotionEvent.ACTION_DOWN, 0.7f);
+            Thread.sleep(delay);
+            assertSpeed(scene, 2f);
+            touch(scene, down, android.view.MotionEvent.ACTION_UP, 0.7f);
+            assertSpeed(scene, 1.25f);
+            scene.onActivity(a -> {
+                a.pauseForTest();
+                player(a.getWindow().getDecorView()).showController();
+            });
+            onView(withContentDescription("播放倍速")).perform(click());
+            onView(withText("1.5x")).inRoot(isDialog()).perform(click());
+            assertSpeed(scene, 1.5f);
+            shot("offline-speed-shortcut");
+            scene.onActivity(a -> a.findViewById(androidx.media3.ui.R.id.exo_fullscreen).performClick());
+            await(scene, a -> a.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE);
+            onView(withContentDescription("播放倍速")).perform(click());
+            onView(withText("1x")).inRoot(isDialog()).perform(click());
+            assertSpeed(scene, 1f);
+            shot("offline-speed-fullscreen");
         }
     }
 }

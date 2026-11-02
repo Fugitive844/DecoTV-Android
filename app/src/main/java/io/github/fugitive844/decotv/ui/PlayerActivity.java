@@ -64,7 +64,8 @@ public class PlayerActivity extends AppCompatActivity {
     private PlayerGestures.Frame playerBox;
     private View details;
     private TextView title, meta, status, desc;
-    private Action favButton, speedButton;
+    private Action favButton;
+    private TextView speedButton;
     private PlayerLayout layout;
     private PlayerGestures gestures;
     private LinearLayout pages;
@@ -210,8 +211,8 @@ public class PlayerActivity extends AppCompatActivity {
         view.setPlayer(episodeControls(player));
         view.setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS);
         view.setFullscreenButtonClickListener(ignored -> layout.toggle());
-        // 齿轮按钮提供换源和倍速，全屏时不必退出即可切换
-        view.findViewById(androidx.media3.ui.R.id.exo_settings).setOnClickListener(v -> playerMenu());
+        // 齿轮用于换源，倍速从右上角快捷按钮进入。
+        view.findViewById(androidx.media3.ui.R.id.exo_settings).setOnClickListener(v -> chooseSourceDialog());
         view.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener) visibility -> {
             if (layout != null) layout.setControlsVisible(visibility == View.VISIBLE);
         });
@@ -222,6 +223,7 @@ public class PlayerActivity extends AppCompatActivity {
         playerBox.addView(speed.view(), speed.params(this));
         details = buildDetails();
         layout = new PlayerLayout(this, playerBox, details);
+        speedButton = layout.addSpeedButton(DecoApp.get().prefs.playbackSpeed(), this::chooseSpeed, route);
         setContentView(layout.view());
         danmaku = new DanmakuController(this, view, layout, player);
         gestures = new PlayerGestures(this, playerBox, new PlayerGestures.Host() {
@@ -275,7 +277,7 @@ public class PlayerActivity extends AppCompatActivity {
 
             @Override public void onPlaybackParametersChanged(@NonNull androidx.media3.common.PlaybackParameters params) {
                 // 长按临时 2 倍速不改按钮；其余倍速在本页内跨集、跨源保留，下次打开恢复为设置里的默认倍速
-                if (!holding) speedButton.setValue(speedLabel(params.speed));
+                if (!holding) speedButton.setText(speedLabel(params.speed));
             }
 
             @Override public void onVideoSizeChanged(@NonNull androidx.media3.common.VideoSize size) {
@@ -323,10 +325,6 @@ public class PlayerActivity extends AppCompatActivity {
         actions.addView(favButton, Ui.weight(1));
         actions.addView(new Action(R.drawable.ic_download, "缓存", v -> DownloadDialog.show(this, video, index)), Ui.weight(1));
         actions.addView(new Action(R.drawable.ic_danmaku, "弹幕", v -> danmaku.showPanel()), Ui.weight(1));
-        speedButton = new Action(0, "倍速", v -> chooseSpeed());
-        speedButton.setValue(speedLabel(DecoApp.get().prefs.playbackSpeed()));
-        speedButton.setContentDescription("播放倍速");
-        actions.addView(speedButton, Ui.weight(1));
         actions.addView(new Action(R.drawable.ic_skip_prev, "上一集", v -> step(-1)), Ui.weight(1));
         actions.addView(new Action(R.drawable.ic_skip_next, "下一集", v -> step(1)), Ui.weight(1));
         box.addView(actions);
@@ -611,12 +609,6 @@ public class PlayerActivity extends AppCompatActivity {
 
     static String speedLabel(float s) {
         return (s == Math.round(s) ? String.format(Locale.ROOT, "%.0f", s) : String.format(Locale.ROOT, "%s", s)) + "x";
-    }
-
-    private void playerMenu() {
-        String[] items = {"换源（" + video.sourceName + "）", "倍速（" + speedLabel(player.getPlaybackParameters().speed) + "）"};
-        new com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
-                .setItems(items, (d, which) -> { if (which == 0) chooseSourceDialog(); else chooseSpeed(); }).show();
     }
 
     /** 与页面下方「换源」列表相同的源，以对话框列出，供全屏时使用。 */
@@ -950,6 +942,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     @Override protected void onPause() {
         super.onPause();
+        if (gestures != null) gestures.cancel();
         save();
         if (player != null) player.pause();
     }

@@ -75,7 +75,7 @@ public class OfflinePlayerActivity extends AppCompatActivity {
     /** 正在边存边播的任务 id，没有为 null。 */
     private String streaming;
     private final DownloadStore.Listener storeListener = this::onStoreChanged;
-    private MaterialButton speedButton;
+    private TextView speedButton;
     private RowAdapter<DownloadTask> list;
     private DanmakuController danmaku;
     private Video video;
@@ -140,7 +140,7 @@ public class OfflinePlayerActivity extends AppCompatActivity {
         player = new ExoPlayer.Builder(this).setSeekBackIncrementMs(10000).setSeekForwardIncrementMs(10000).build();
         view.setPlayer(controls(player));
         view.setFullscreenButtonClickListener(ignored -> layout.toggle());
-        // 全屏时也可以手动选择缓存，倍速仍可从菜单进入。
+        // 全屏时也可以手动选择缓存，倍速从右上角快捷按钮进入。
         view.findViewById(androidx.media3.ui.R.id.exo_settings).setOnClickListener(v -> playerMenu());
         view.findViewById(androidx.media3.ui.R.id.exo_prev).setContentDescription("上一个缓存");
         view.findViewById(androidx.media3.ui.R.id.exo_next).setContentDescription("下一个缓存");
@@ -166,8 +166,6 @@ public class OfflinePlayerActivity extends AppCompatActivity {
         actions.addView(button("上一个缓存", v -> step(-1)));
         actions.addView(button("下一个缓存", v -> step(1)));
         actions.addView(button("缓存列表", v -> chooseCache()));
-        speedButton = button(PlayerActivity.speedLabel(DecoApp.get().prefs.playbackSpeed()), v -> chooseSpeed());
-        actions.addView(speedButton);
         actions.addView(button("弹幕", v -> danmaku.showPanel()));
         HorizontalScrollView scroll = new HorizontalScrollView(this);
         scroll.addView(actions);
@@ -191,6 +189,7 @@ public class OfflinePlayerActivity extends AppCompatActivity {
         details.addView(rv, Ui.fill(1));
 
         layout = new PlayerLayout(this, box, details);
+        speedButton = layout.addSpeedButton(DecoApp.get().prefs.playbackSpeed(), this::chooseSpeed, badge);
         setContentView(layout.view());
         danmaku = new DanmakuController(this, view, layout, player);
         gestures = new PlayerGestures(this, box, new PlayerGestures.Host() {
@@ -350,9 +349,8 @@ public class OfflinePlayerActivity extends AppCompatActivity {
 
     private void playerMenu() {
         new com.google.android.material.dialog.MaterialAlertDialogBuilder(this).setTitle("播放设置")
-                .setItems(new String[]{"缓存列表", "播放倍速", "弹幕设置"}, (d, which) -> {
+                .setItems(new String[]{"缓存列表", "弹幕设置"}, (d, which) -> {
                     if (which == 0) chooseCache();
-                    else if (which == 1) chooseSpeed();
                     else danmaku.showPanel();
                 }).show();
     }
@@ -467,6 +465,7 @@ public class OfflinePlayerActivity extends AppCompatActivity {
 
     @Override protected void onPause() {
         super.onPause();
+        if (gestures != null) gestures.cancel();
         save();
         if (player != null) player.pause();
     }

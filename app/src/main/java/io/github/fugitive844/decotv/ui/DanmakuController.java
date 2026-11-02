@@ -67,7 +67,7 @@ final class DanmakuController {
         toggle.setOnClickListener(v -> {
             settings.enabled = !settings.enabled;
             apply();
-            Ui.toast(activity, settings.enabled ? "弹幕已开启" : "弹幕已关闭");
+            Ui.toast(activity, (settings.enabled ? "弹幕已开启" : "弹幕已关闭") + "\n长按弹字进入弹幕设置");
         });
         toggle.setOnLongClickListener(v -> {
             showPanel();
