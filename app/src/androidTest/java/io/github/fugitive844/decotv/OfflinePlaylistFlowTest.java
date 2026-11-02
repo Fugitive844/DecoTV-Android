@@ -3,6 +3,7 @@ package io.github.fugitive844.decotv;
 import static org.junit.Assert.*;
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
+import static androidx.test.espresso.action.ViewActions.swipeUp;
 import static androidx.test.espresso.matcher.RootMatchers.isDialog;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
@@ -157,6 +158,83 @@ public class OfflinePlaylistFlowTest {
         return null;
     }
 
+    private static View description(View root, String value) {
+        if (value.contentEquals(root.getContentDescription() == null ? "" : root.getContentDescription())) return root;
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = description(group.getChildAt(i), value);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private static androidx.recyclerview.widget.RecyclerView overlay(Activity activity) {
+        return (androidx.recyclerview.widget.RecyclerView) description(activity.getWindow().getDecorView(), "全屏缓存列表");
+    }
+
+    @Test public void fullscreenCacheOverlaySupportsQuickSelectionAndWraparound() throws Exception {
+        long now = System.currentTimeMillis();
+        DownloadTask a = add("电影甲", 0, 1, now, DownloadTask.Format.ORIGINAL);
+        DownloadTask b = add("电影乙", 0, 1, now + 1, DownloadTask.Format.ENCRYPTED);
+        add("电影丙", 0, 1, now + 2, DownloadTask.Format.ORIGINAL);
+        add("测试剧", 1, 2, now + 3, DownloadTask.Format.ENCRYPTED);
+        DownloadTask first = add("测试剧", 0, 2, now + 4, DownloadTask.Format.ENCRYPTED);
+        try (ActivityScenario<OfflinePlayerActivity> scene = ActivityScenario.launch(OfflinePlayerActivity.intent(app, first.id))) {
+            ready(scene, first);
+            scene.onActivity(x -> {
+                assertFalse(overlay(x).isShown());
+                player(x.getWindow().getDecorView()).showController();
+                x.findViewById(androidx.media3.ui.R.id.exo_fullscreen).performClick();
+            });
+            await(scene, x -> x.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+                    && overlay(x).isShown() && overlay(x).getHeight() > 0);
+            scene.onActivity(x -> assertEquals(5, overlay(x).getAdapter().getItemCount()));
+            java.util.concurrent.atomic.AtomicLong before = new java.util.concurrent.atomic.AtomicLong();
+            scene.onActivity(x -> before.set(x.positionMs()));
+            onView(withContentDescription("全屏缓存列表")).perform(swipeUp());
+            scene.onActivity(x -> {
+                assertEquals(first.id, x.currentCacheId());
+                assertTrue("滚动列表不能快进快退", Math.abs(before.get() - x.positionMs()) < 100);
+                overlay(x).scrollToPosition(3);
+            });
+            await(scene, x -> overlay(x).findViewHolderForAdapterPosition(3) != null);
+            scene.onActivity(x -> overlay(x).findViewHolderForAdapterPosition(3).itemView.performClick());
+            ready(scene, b);
+            await(scene, x -> overlay(x).findViewHolderForAdapterPosition(3) != null
+                    && overlay(x).findViewHolderForAdapterPosition(3).itemView.isSelected());
+            shot("offline-fullscreen-overlay");
+            next(scene, true); ready(scene, a);
+            next(scene, true); ready(scene, first);
+            next(scene, false); ready(scene, a);
+            scene.onActivity(x -> player(x.getWindow().getDecorView()).hideController());
+            await(scene, x -> !overlay(x).isShown());
+            scene.onActivity(x -> player(x.getWindow().getDecorView()).showController());
+            await(scene, x -> overlay(x).isShown());
+            app.downloads.remove(b.id);
+            await(scene, x -> overlay(x).getAdapter().getItemCount() == 4 && x.currentCacheId().equals(a.id));
+            add("新增电影", 0, 1, now + 5, DownloadTask.Format.ENCRYPTED);
+            await(scene, x -> overlay(x).getAdapter().getItemCount() == 5 && x.currentCacheId().equals(a.id));
+            // 旋转到竖屏全屏时列表仍可用，且不遮挡中部播放按钮。
+            scene.onActivity(x -> description(x.getWindow().getDecorView(), "旋转屏幕").performClick());
+            await(scene, x -> x.getResources().getConfiguration().orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT
+                    && overlay(x).isShown() && ((View) player(x.getWindow().getDecorView()).getParent()).getHeight()
+                    > ((View) player(x.getWindow().getDecorView()).getParent()).getWidth());
+            scene.onActivity(x -> {
+                View panel = (View) overlay(x).getParent();
+                View box = (View) panel.getParent();
+                assertTrue("竖屏列表须避开中间播放按钮", panel.getBottom() < box.getHeight() / 2);
+            });
+            await(scene, x -> ((androidx.recyclerview.widget.LinearLayoutManager) overlay(x).getLayoutManager())
+                    .findLastCompletelyVisibleItemPosition() == 4);
+            shot("offline-portrait-fullscreen-overlay");
+            scene.onActivity(x -> x.getOnBackPressedDispatcher().onBackPressed());
+            await(scene, x -> !overlay(x).isShown());
+            scene.onActivity(OfflinePlaylistFlowTest::half);
+        }
+    }
+
     private static TextView text(View root, String match) {
         if (root instanceof TextView && ((TextView) root).getText().toString().equals(match)) return (TextView) root;
         if (root instanceof ViewGroup) {
@@ -193,6 +271,7 @@ public class OfflinePlaylistFlowTest {
     }
 
     private void shot(String name) throws Exception {
+        Thread.sleep(700); // 等旋转动画结束，避免截图截到过渡帧。
         Bitmap bitmap = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
         try (FileOutputStream out = new FileOutputStream(new File(app.getExternalFilesDir("evidence"), name + ".png"))) {
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);

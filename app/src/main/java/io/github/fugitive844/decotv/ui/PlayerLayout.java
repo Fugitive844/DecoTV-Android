@@ -24,6 +24,7 @@ final class PlayerLayout {
     private final TextView rotate;
     private View left;
     private TextView speedButton;
+    private boolean leftAboveList;
     private Runnable onChange;
     private boolean fullscreen, portraitVideo, portraitFullscreen, controls = true;
 
@@ -68,6 +69,12 @@ final class PlayerLayout {
     void addLeftButton(View button) {
         left = button;
         box.addView(button, sideParams(activity, Gravity.START));
+        updateRotate();
+    }
+
+    /** 全屏左侧有列表时，将弹幕按钮移到列表上方，避免遮挡列表行。 */
+    void setLeftButtonAboveList(boolean enabled) {
+        leftAboveList = enabled;
         updateRotate();
     }
 
@@ -184,7 +191,19 @@ final class PlayerLayout {
 
     private void updateRotate() {
         rotate.setVisibility(fullscreen && controls && !tablet(activity) ? View.VISIBLE : View.GONE);
-        if (left != null) left.setVisibility(controls ? View.VISIBLE : View.GONE);
+        if (left != null) {
+            if (fullscreen && leftAboveList) {
+                int size = Ui.dp(activity, 44);
+                FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(size, size, Gravity.TOP | Gravity.START);
+                lp.topMargin = lp.leftMargin = Ui.dp(activity, 12);
+                left.setLayoutParams(lp);
+                left.setTranslationY(0);
+            } else {
+                left.setLayoutParams(sideParams(activity, Gravity.START));
+                left.setTranslationY(-Ui.dp(activity, 96));
+            }
+            left.setVisibility(controls ? View.VISIBLE : View.GONE);
+        }
         if (speedButton != null) speedButton.setVisibility(controls ? View.VISIBLE : View.GONE);
         if (onChange != null) onChange.run();
     }

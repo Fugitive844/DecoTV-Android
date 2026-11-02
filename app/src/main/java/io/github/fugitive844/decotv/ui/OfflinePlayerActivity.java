@@ -71,6 +71,13 @@ public class OfflinePlayerActivity extends AppCompatActivity {
     private TextView title, status, badge;
     private TextView listTitle;
     private LinearLayoutManager listLayout;
+    private LinearLayout cachePanel;
+    private TextView cachePanelTitle;
+    private RowAdapter<DownloadTask> cacheOverlay;
+    private LinearLayoutManager cacheOverlayLayout;
+    private boolean overlayShown;
+    private int overlayWidth, overlayHeight;
+    private String overlayCurrentId = "";
     private DownloadTask currentTask;
     /** 正在边存边播的任务 id，没有为 null。 */
     private String streaming;
@@ -189,7 +196,10 @@ public class OfflinePlayerActivity extends AppCompatActivity {
         details.addView(rv, Ui.fill(1));
 
         layout = new PlayerLayout(this, box, details);
+        layout.setLeftButtonAboveList(true);
         speedButton = layout.addSpeedButton(DecoApp.get().prefs.playbackSpeed(), this::chooseSpeed, badge);
+        buildCacheOverlay();
+        layout.setOnChange(this::updateCacheOverlay);
         setContentView(layout.view());
         danmaku = new DanmakuController(this, view, layout, player);
         gestures = new PlayerGestures(this, box, new PlayerGestures.Host() {
@@ -343,8 +353,102 @@ public class OfflinePlayerActivity extends AppCompatActivity {
 
     private static String cacheLabel(DownloadTask t) { return t.title + " · " + t.episodeTitle; }
 
+    /** 与直播频道列表一样：直接在全屏画面上点选缓存，不必先打开设置菜单。 */
+    private void buildCacheOverlay() {
+        cacheOverlay = new RowAdapter<DownloadTask>(0, 0, (h, t) -> {
+            boolean selected = currentTask != null && currentTask.id.equals(t.id);
+            h.title.setText((selected ? "▶ " : "") + cacheLabel(t));
+            h.title.setTextColor(selected ? 0xFF81E6BC : 0xFFFFFFFF);
+            h.subtitle.setText(t.format.label + (t.state == DownloadTask.State.DONE ? "" : " · 边存边播"));
+            h.subtitle.setTextColor(0xCCFFFFFF);
+            h.itemView.setBackgroundColor(selected ? 0x335AD9A5 : 0);
+            h.itemView.setSelected(selected);
+        }).onClick((t, i) -> {
+            view.showController();
+            selectCache(t.id);
+        });
+        RecyclerView items = new RecyclerView(this);
+        items.setContentDescription("全屏缓存列表");
+        cacheOverlayLayout = new LinearLayoutManager(this);
+        items.setLayoutManager(cacheOverlayLayout);
+        items.setAdapter(cacheOverlay);
+        items.setItemAnimator(null);
+        items.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (overlayShown && (r - l != or - ol || b - t != ob - ot))
+                v.post(this::revealCacheOverlay);
+        });
+        items.addOnItemTouchListener(new RecyclerView.SimpleOnItemTouchListener() {
+            @Override public boolean onInterceptTouchEvent(@NonNull RecyclerView rv, @NonNull android.view.MotionEvent event) {
+                view.showController();
+                return false;
+            }
+        });
+        items.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override public void onScrolled(@NonNull RecyclerView rv, int dx, int dy) {
+                if (rv.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) view.showController();
+            }
+        });
+        cachePanel = Ui.column(this, 0);
+        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+        bg.setCornerRadius(Ui.dp(this, 12));
+        bg.setColor(0xB3000000);
+        cachePanel.setBackground(bg);
+        cachePanel.setClickable(true);
+        cachePanelTitle = Ui.text(this, "缓存列表", 14, true);
+        cachePanelTitle.setTextColor(0xCCFFFFFF);
+        cachePanelTitle.setPadding(Ui.dp(this, 12), Ui.dp(this, 10), Ui.dp(this, 12), Ui.dp(this, 6));
+        cachePanel.addView(cachePanelTitle);
+        cachePanel.addView(items, Ui.fill(1));
+        cachePanel.setVisibility(View.GONE);
+        box.addView(cachePanel, new android.widget.FrameLayout.LayoutParams(0, 0));
+        box.exempt(cachePanel);
+        box.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (r - l != or - ol || b - t != ob - ot) v.post(this::updateCacheOverlay);
+        });
+    }
+
+    private void updateCacheOverlay() {
+        if (cachePanel == null) return;
+        boolean show = layout.fullscreen() && layout.controlsVisible() && !episodes.isEmpty();
+        int width = box.getWidth(), height = box.getHeight();
+        boolean resized = overlayWidth != width || overlayHeight != height;
+        overlayWidth = width;
+        overlayHeight = height;
+        if (show && width > 0 && height > 0) {
+            int edge = Ui.dp(this, 12), top = Ui.dp(this, 64), bottom = Ui.dp(this, 84);
+            boolean portrait = height > width;
+            // 竖屏全屏时列表只占左上区域，为中间的播放/上下项按钮留出空间。
+            int panelWidth = Math.min(Ui.dp(this, 260), (int) (width * (portrait ? 0.65f : 0.28f)));
+            int panelHeight = portrait ? Math.max(0, height / 2 - top - Ui.dp(this, 64))
+                    : android.widget.FrameLayout.LayoutParams.MATCH_PARENT;
+            android.widget.FrameLayout.LayoutParams lp = new android.widget.FrameLayout.LayoutParams(
+                    panelWidth, panelHeight, android.view.Gravity.TOP | android.view.Gravity.START);
+            lp.setMargins(edge, top, 0, portrait ? 0 : bottom);
+            cachePanel.setLayoutParams(lp);
+        }
+        cachePanel.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (show && (!overlayShown || resized)) revealCacheOverlay();
+        overlayShown = show;
+    }
+
+    private void revealCacheOverlay() {
+        int first = cacheOverlayLayout.findFirstCompletelyVisibleItemPosition();
+        int last = cacheOverlayLayout.findLastCompletelyVisibleItemPosition();
+        if (first == RecyclerView.NO_POSITION || position < first || position > last)
+            cacheOverlayLayout.scrollToPositionWithOffset(position, 0);
+    }
+
     private void updateListTitle() {
         listTitle.setText("缓存列表 · " + (position + 1) + "/" + episodes.size() + " · 循环播放");
+        if (cacheOverlay != null) {
+            cachePanelTitle.setText("缓存列表 · " + (position + 1) + "/" + episodes.size());
+            cacheOverlay.set(episodes);
+            String id = currentTask == null ? "" : currentTask.id;
+            boolean changed = !id.equals(overlayCurrentId);
+            overlayCurrentId = id;
+            updateCacheOverlay();
+            if (changed && overlayShown) revealCacheOverlay();
+        }
     }
 
     private void playerMenu() {
